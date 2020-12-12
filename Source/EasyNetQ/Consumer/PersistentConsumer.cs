@@ -1,101 +1,60 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using EasyNetQ.Events;
+using EasyNetQ.Internals;
 using EasyNetQ.Topology;
 
 namespace EasyNetQ.Consumer
 {
     public class PersistentConsumer : IConsumer
     {
-        private readonly IQueue queue;
-        private readonly Func<Byte[], MessageProperties, MessageReceivedInfo, Task> onMessage;
-        private readonly IPersistentConnection connection;
-        private readonly IConsumerConfiguration configuration;
-
-        private readonly IInternalConsumerFactory internalConsumerFactory;
+        private readonly ConsumerConfiguration configuration;
         private readonly IEventBus eventBus;
 
-        private readonly ConcurrentDictionary<IInternalConsumer, object> internalConsumers = 
-            new ConcurrentDictionary<IInternalConsumer, object>();
+        private readonly IInternalConsumerFactory internalConsumerFactory;
 
-        private readonly IList<CancelSubscription> eventCancellations = new List<CancelSubscription>();
+        private readonly ConcurrentSet<IInternalConsumer> internalConsumers = new ConcurrentSet<IInternalConsumer>();
+
+        private readonly MessageHandler onMessage;
+        private readonly IQueue queue;
+
+        private readonly IList<IDisposable> subscriptions = new List<IDisposable>();
+
+        private bool disposed;
 
         public PersistentConsumer(
-            IQueue queue, 
-            Func<byte[], MessageProperties, MessageReceivedInfo, Task> onMessage, 
-            IPersistentConnection connection, 
-            IConsumerConfiguration configuration,
+            IQueue queue,
+            MessageHandler onMessage,
+            ConsumerConfiguration configuration,
             IInternalConsumerFactory internalConsumerFactory,
-            IEventBus eventBus)
+            IEventBus eventBus
+        )
         {
             Preconditions.CheckNotNull(queue, "queue");
             Preconditions.CheckNotNull(onMessage, "onMessage");
-            Preconditions.CheckNotNull(connection, "connection");
             Preconditions.CheckNotNull(internalConsumerFactory, "internalConsumerFactory");
             Preconditions.CheckNotNull(eventBus, "eventBus");
             Preconditions.CheckNotNull(configuration, "configuration");
 
             this.queue = queue;
             this.onMessage = onMessage;
-            this.connection = connection;
             this.configuration = configuration;
             this.internalConsumerFactory = internalConsumerFactory;
             this.eventBus = eventBus;
         }
 
-        public IDisposable StartConsuming()
+        /// <inheritdoc />
+        public void StartConsuming()
         {
-            eventCancellations.Add(eventBus.Subscribe<ConnectionCreatedEvent>(e => ConnectionOnConnected()));
-            eventCancellations.Add(eventBus.Subscribe<ConnectionDisconnectedEvent>(e => ConnectionOnDisconnected()));
+            subscriptions.Add(eventBus.Subscribe<ConnectionRecoveredEvent>(ConnectionOnConnected));
+            subscriptions.Add(eventBus.Subscribe<ConnectionDisconnectedEvent>(ConnectionOnDisconnected));
 
-            StartConsumingInternal();
-
-            return new ConsumerCancellation(Dispose);
-        }
-
-        private void StartConsumingInternal()
-        {
-            if (disposed) return;
-
-            if(!connection.IsConnected)
-            {
-                // connection is not connected, so just ignore this call. A consumer will
-                // be created and start consuming when the connection reconnects.
-                return;
-            }
-
-            var internalConsumer = internalConsumerFactory.CreateConsumer();
-            internalConsumers.TryAdd(internalConsumer, null);
-
-            internalConsumer.Cancelled += consumer => Dispose();
-
-            var status = internalConsumer.StartConsuming(
-                connection,
-                queue,
-                onMessage,
-                configuration);
-
-            if (status == StartConsumingStatus.Succeed)
-                eventBus.Publish(new StartConsumingSucceededEvent(this, queue));
-            else
-                eventBus.Publish(new StartConsumingFailedEvent(this, queue));
-        }
-
-        private void ConnectionOnDisconnected()
-        {
-            internalConsumerFactory.OnDisconnected();
-            internalConsumers.Clear();
-        }
-
-        private void ConnectionOnConnected()
-        {
             StartConsumingInternal();
         }
 
-        private bool disposed = false;
-
+        /// <inheritdoc />
         public void Dispose()
         {
             if (disposed) return;
@@ -104,14 +63,55 @@ namespace EasyNetQ.Consumer
 
             eventBus.Publish(new StoppedConsumingEvent(this));
 
-            foreach (var cancelSubscription in eventCancellations)
-            {
-                cancelSubscription();
-            }
+            foreach (var subscription in subscriptions)
+                subscription.Dispose();
 
-            foreach (var internalConsumer in internalConsumers.Keys)
-            {
+            foreach (var internalConsumer in internalConsumers)
                 internalConsumer.Dispose();
+        }
+
+        private void StartConsumingInternal()
+        {
+            if (disposed) return;
+
+            var internalConsumer = internalConsumerFactory.CreateConsumer();
+            internalConsumers.Add(internalConsumer);
+
+            internalConsumer.Cancelled += consumer => Dispose();
+
+            var status = internalConsumer.StartConsuming(
+                queue,
+                onMessage,
+                configuration
+            );
+
+            if (status == StartConsumingStatus.Succeed)
+                eventBus.Publish(new StartConsumingSucceededEvent(this, queue));
+            else
+                eventBus.Publish(new StartConsumingFailedEvent(this, queue));
+        }
+
+        private void ConnectionOnDisconnected(ConnectionDisconnectedEvent _)
+        {
+            internalConsumerFactory.OnDisconnected();
+        }
+
+        private void ConnectionOnConnected(ConnectionRecoveredEvent _)
+        {
+            if (disposed) return;
+
+            foreach (var internalConsumer in internalConsumers)
+            {
+                var status = internalConsumer.StartConsuming(
+                    queue,
+                    onMessage,
+                    configuration
+                );
+
+                if (status == StartConsumingStatus.Succeed)
+                    eventBus.Publish(new StartConsumingSucceededEvent(this, queue));
+                else
+                    eventBus.Publish(new StartConsumingFailedEvent(this, queue));
             }
         }
     }

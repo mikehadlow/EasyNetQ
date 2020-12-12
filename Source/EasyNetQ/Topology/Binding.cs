@@ -1,8 +1,10 @@
-﻿namespace EasyNetQ.Topology
+﻿using System.Collections.Generic;
+
+namespace EasyNetQ.Topology
 {
-    public class Binding : IBinding
+    public sealed class Binding : IBinding
     {
-        public Binding(IBindable bindable, IExchange exchange, string routingKey)
+        public Binding(IBindable bindable, IExchange exchange, string routingKey, IDictionary<string, object> arguments)
         {
             Preconditions.CheckNotNull(bindable, "bindable");
             Preconditions.CheckNotNull(exchange, "exchange");
@@ -11,10 +13,12 @@
             Bindable = bindable;
             Exchange = exchange;
             RoutingKey = routingKey;
+            Arguments = arguments;
         }
 
-        public IBindable Bindable { get; private set; }
-        public IExchange Exchange { get; private set; }
-        public string RoutingKey { get; private set; }
+        public IBindable Bindable { get; }
+        public IExchange Exchange { get; }
+        public string RoutingKey { get; }
+        public IDictionary<string, object> Arguments { get; }
     }
 }

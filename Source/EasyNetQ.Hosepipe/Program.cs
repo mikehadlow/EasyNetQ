@@ -11,32 +11,32 @@ namespace EasyNetQ.Hosepipe
     public class Program
     {
         private readonly ArgParser argParser;
-        private readonly IQueueRetreival queueRetreival;
+        private readonly IQueueRetrieval queueRetrieval;
         private readonly IMessageWriter messageWriter;
         private readonly IMessageReader messageReader;
         private readonly IQueueInsertion queueInsertion;
         private readonly IErrorRetry errorRetry;
         private readonly IConventions conventions;
 
-        private static StringBuilder results = new StringBuilder();
+        private static readonly StringBuilder Results = new StringBuilder();
         private static bool succeeded = true;
-        private static Func<string, Action> messsage = m => () =>
+        private static readonly Func<string, Action> Message = m => () =>
         {
-            results.AppendLine(m);
+            Results.AppendLine(m);
             succeeded = false;
         };
 
         public Program(
-            ArgParser argParser, 
-            IQueueRetreival queueRetreival, 
-            IMessageWriter messageWriter, 
-            IMessageReader messageReader, 
-            IQueueInsertion queueInsertion, 
+            ArgParser argParser,
+            IQueueRetrieval queueRetrieval,
+            IMessageWriter messageWriter,
+            IMessageReader messageReader,
+            IQueueInsertion queueInsertion,
             IErrorRetry errorRetry,
             IConventions conventions)
         {
             this.argParser = argParser;
-            this.queueRetreival = queueRetreival;
+            this.queueRetrieval = queueRetrieval;
             this.messageWriter = messageWriter;
             this.messageReader = messageReader;
             this.queueInsertion = queueInsertion;
@@ -46,13 +46,13 @@ namespace EasyNetQ.Hosepipe
 
         public static void Main(string[] args)
         {
-            var typeNameSerializer = new TypeNameSerializer();
+            var typeNameSerializer = new LegacyTypeNameSerializer();
             var argParser = new ArgParser();
             var arguments = argParser.Parse(args);
 
-            bool enableBinaryPayloads = false;
+            var enableBinaryPayloads = false;
             arguments.WithTypedKeyOptional<bool>("b", a => enableBinaryPayloads = bool.Parse(a.Value))
-                .FailWith(messsage("Invalid enable binary payloads (b) parameter"));
+                .FailWith(Message("Invalid enable binary payloads (b) parameter"));
 
             IErrorMessageSerializer errorMessageSerializer;
             if (enableBinaryPayloads)
@@ -62,17 +62,18 @@ namespace EasyNetQ.Hosepipe
             else
             {
                 errorMessageSerializer = new DefaultErrorMessageSerializer();
-            }            
+            }
 
-            // poor man's dependency injection FTW ;)            
+            // poor man's dependency injection FTW ;)
             var program = new Program(
-                argParser, 
-                new QueueRetreival(errorMessageSerializer), 
+                argParser,
+                new QueueRetrieval(errorMessageSerializer),
                 new FileMessageWriter(),
-                new MessageReader(), 
+                new MessageReader(),
                 new QueueInsertion(errorMessageSerializer),
-                new ErrorRetry(new JsonSerializer(typeNameSerializer), errorMessageSerializer),
-                new Conventions(typeNameSerializer));
+                new ErrorRetry(new JsonSerializer(), errorMessageSerializer),
+                new Conventions(typeNameSerializer)
+            );
             program.Start(args);
         }
 
@@ -82,23 +83,24 @@ namespace EasyNetQ.Hosepipe
 
             var parameters = new QueueParameters();
             arguments.WithKey("s", a => parameters.HostName = a.Value);
+            arguments.WithKey("sp", a => parameters.HostPort = Convert.ToInt32(a.Value));
             arguments.WithKey("v", a => parameters.VHost = a.Value);
             arguments.WithKey("u", a => parameters.Username = a.Value);
             arguments.WithKey("p", a => parameters.Password = a.Value);
-            arguments.WithKey("o", a => parameters.MessageFilePath = a.Value);
+            arguments.WithKey("o", a => parameters.MessagesOutputDirectory = a.Value);
             arguments.WithKey("q", a => parameters.QueueName = a.Value);
             arguments.WithTypedKeyOptional<int>("n", a => parameters.NumberOfMessagesToRetrieve = int.Parse(a.Value))
-                .FailWith(messsage("Invalid number of messages to retrieve"));
+                .FailWith(Message("Invalid number of messages to retrieve"));
             arguments.WithTypedKeyOptional<bool>("x", a => parameters.Purge = bool.Parse(a.Value))
-                .FailWith(messsage("Invalid purge (x) parameter"));            
+                .FailWith(Message("Invalid purge (x) parameter"));
 
             try
             {
-                arguments.At(0, "dump", () => arguments.WithKey("q", a => 
+                arguments.At(0, "dump", () => arguments.WithKey("q", a =>
                 {
                     parameters.QueueName = a.Value;
                     Dump(parameters);
-                }).FailWith(messsage("No Queue Name given")));
+                }).FailWith(Message("No Queue Name given")));
 
                 arguments.At(0, "insert", () => Insert(parameters));
 
@@ -109,18 +111,18 @@ namespace EasyNetQ.Hosepipe
                 arguments.At(0, "?", PrintUsage);
 
                 // print usage if there are no arguments
-                arguments.At(0, a => {}).FailWith(PrintUsage);
+                arguments.At(0, a => { }).FailWith(PrintUsage);
             }
             catch (EasyNetQHosepipeException easyNetQHosepipeException)
             {
-                Console.WriteLine("Operation Failed:");    
+                Console.WriteLine("Operation Failed:");
                 Console.WriteLine(easyNetQHosepipeException.Message);
             }
 
-            if(!succeeded)
+            if (!succeeded)
             {
                 Console.WriteLine("Operation failed");
-                Console.Write(results.ToString());
+                Console.Write(Results.ToString());
                 Console.WriteLine();
                 PrintUsage();
             }
@@ -129,45 +131,49 @@ namespace EasyNetQ.Hosepipe
         private void Dump(QueueParameters parameters)
         {
             var count = 0;
-            messageWriter.Write(WithEach(queueRetreival.GetMessagesFromQueue(parameters), () => count++), parameters);
-            
-            Console.WriteLine("{0} Messages from queue '{1}'\r\noutput to directory '{2}'", 
-                count, parameters.QueueName, parameters.MessageFilePath);
+            messageWriter.Write(WithEach(queueRetrieval.GetMessagesFromQueue(parameters), () => count++), parameters);
+
+            Console.WriteLine(
+                "{0} messages from queue '{1}' were dumped to directory '{2}'",
+                count, parameters.QueueName, parameters.MessagesOutputDirectory
+            );
         }
 
         private void Insert(QueueParameters parameters)
         {
             var count = 0;
             queueInsertion.PublishMessagesToQueue(
-                WithEach(messageReader.ReadMessages(parameters), () => count++), parameters);       
-            
-            Console.WriteLine("{0} Messages from directory '{1}'\r\ninserted into queue '{2}'",
-                count, parameters.MessageFilePath, parameters.QueueName);
+                WithEach(messageReader.ReadMessages(parameters), () => count++), parameters
+            );
+
+            Console.WriteLine(
+                "{0} messages from directory '{1}' were inserted into queue '{2}'",
+                count, parameters.MessagesOutputDirectory, parameters.QueueName
+            );
         }
 
         private void ErrorDump(QueueParameters parameters)
         {
-            if(parameters.QueueName == null)
-                parameters.QueueName = conventions.ErrorQueueNamingConvention();
+            if (parameters.QueueName == null)
+                parameters.QueueName = conventions.ErrorQueueNamingConvention(null);
             Dump(parameters);
         }
 
         private void Retry(QueueParameters parameters)
         {
             var count = 0;
-            var queueName = parameters.QueueName ?? conventions.ErrorQueueNamingConvention();
-            
-            errorRetry.RetryErrors(
-                WithEach(
-                    messageReader.ReadMessages(parameters, queueName), 
-                    () => count++), 
-                parameters);
+            var queueName = parameters.QueueName ?? conventions.ErrorQueueNamingConvention(null);
 
-            Console.WriteLine("{0} Error messages from directory '{1}' republished",
-                count, parameters.MessageFilePath);
+            errorRetry.RetryErrors(
+                WithEach(messageReader.ReadMessages(parameters, queueName), () => count++), parameters
+            );
+
+            Console.WriteLine(
+                "{0} error messages from directory '{1}' were republished", count, parameters.MessagesOutputDirectory
+            );
         }
 
-        private IEnumerable<HosepipeMessage> WithEach(IEnumerable<HosepipeMessage> messages, Action action)
+        private static IEnumerable<HosepipeMessage> WithEach(IEnumerable<HosepipeMessage> messages, Action action)
         {
             foreach (var message in messages)
             {
@@ -176,19 +182,16 @@ namespace EasyNetQ.Hosepipe
             }
         }
 
-        public static void PrintUsage()
+        private static void PrintUsage()
         {
-            using (var manifest = Assembly.GetExecutingAssembly().GetManifestResourceStream("EasyNetQ.Hosepipe.Usage.txt"))
+            using var manifest = typeof(Program).GetTypeInfo().Assembly.GetManifestResourceStream("EasyNetQ.Hosepipe.Usage.txt");
+            if (manifest == null)
             {
-                if(manifest == null)
-                {
-                    throw new Exception("Could not load usage");
-                }
-                using (var reader = new StreamReader(manifest))
-                {
-                    Console.Write(reader.ReadToEnd());
-                }
+                throw new Exception("Could not load usage");
             }
+
+            using var reader = new StreamReader(manifest);
+            Console.Write(reader.ReadToEnd());
         }
     }
 }

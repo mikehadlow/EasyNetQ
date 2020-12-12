@@ -1,7 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using EasyNetQ.Events;
+using EasyNetQ.Logging;
 using EasyNetQ.Topology;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
@@ -11,101 +14,106 @@ namespace EasyNetQ.Consumer
     public interface IInternalConsumer : IDisposable
     {
         StartConsumingStatus StartConsuming(
-            IPersistentConnection connection,
             IQueue queue,
-            Func<byte[], MessageProperties, MessageReceivedInfo, Task> onMessage,
-            IConsumerConfiguration configuration
-            );
+            MessageHandler onMessage,
+            ConsumerConfiguration configuration
+        );
+
+        StartConsumingStatus StartConsuming(
+            IReadOnlyCollection<Tuple<IQueue, MessageHandler>> queueConsumerPairs,
+            ConsumerConfiguration configuration
+        );
 
         event Action<IInternalConsumer> Cancelled;
     }
 
-    public class InternalConsumer : IBasicConsumer, IInternalConsumer
+    public class BasicConsumer : IBasicConsumer, IDisposable
     {
-        private readonly IHandlerRunner handlerRunner;
-        private readonly IEasyNetQLogger logger;
+        private readonly Action<BasicConsumer> cancelled;
         private readonly IConsumerDispatcher consumerDispatcher;
-        private readonly IConventions conventions;
-        private readonly ConnectionConfiguration connectionConfiguration;
         private readonly IEventBus eventBus;
+        private readonly IHandlerRunner handlerRunner;
+        private readonly ILog logger = LogProvider.For<BasicConsumer>();
 
-        private Func<byte[], MessageProperties, MessageReceivedInfo, Task> onMessage;
-        private IQueue queue;
+        private bool disposed;
 
-        public IModel Model { get; private set; }
-        public event EventHandler<ConsumerEventArgs> ConsumerCancelled;
-        public string ConsumerTag { get; private set; }
-
-        public event Action<IInternalConsumer> Cancelled;
-
-        public InternalConsumer(
-            IHandlerRunner handlerRunner,
-            IEasyNetQLogger logger,
+        public BasicConsumer(
+            Action<BasicConsumer> cancelled,
             IConsumerDispatcher consumerDispatcher,
-            IConventions conventions,
-            ConnectionConfiguration connectionConfiguration,
-            IEventBus eventBus)
+            IQueue queue,
+            IEventBus eventBus,
+            IHandlerRunner handlerRunner,
+            MessageHandler onMessage,
+            IModel model
+        )
         {
-            Preconditions.CheckNotNull(handlerRunner, "handlerRunner");
-            Preconditions.CheckNotNull(logger, "logger");
-            Preconditions.CheckNotNull(consumerDispatcher, "consumerDispatcher");
-            Preconditions.CheckNotNull(conventions, "conventions");
-            Preconditions.CheckNotNull(connectionConfiguration, "connectionConfiguration");
-            Preconditions.CheckNotNull(eventBus, "eventBus");
+            Preconditions.CheckNotNull(onMessage, "onMessage");
 
-            this.handlerRunner = handlerRunner;
-            this.logger = logger;
+            Queue = queue;
+            OnMessage = onMessage;
+            this.cancelled = cancelled;
             this.consumerDispatcher = consumerDispatcher;
-            this.conventions = conventions;
-            this.connectionConfiguration = connectionConfiguration;
             this.eventBus = eventBus;
+            this.handlerRunner = handlerRunner;
+            Model = model;
         }
 
-        public StartConsumingStatus StartConsuming(
-            IPersistentConnection connection,
-            IQueue queue,
-            Func<byte[], MessageProperties, MessageReceivedInfo, Task> onMessage,
-            IConsumerConfiguration configuration
-            )
+        public MessageHandler OnMessage { get; }
+        public IQueue Queue { get; }
+        public string ConsumerTag { get; private set; }
+
+        /// <inheritdoc />
+        public void HandleBasicConsumeOk(string consumerTag)
         {
-            Preconditions.CheckNotNull(connection, "connection");
-            Preconditions.CheckNotNull(queue, "queue");
-            Preconditions.CheckNotNull(onMessage, "onMessage");
-            Preconditions.CheckNotNull(configuration, "configuration");
+            ConsumerTag = consumerTag;
+        }
 
-            this.queue = queue;
-            this.onMessage = onMessage;
-            var consumerTag = conventions.ConsumerTagConvention();
-            IDictionary<string, object> arguments = new Dictionary<string, object>
-                {
-                    {"x-priority", configuration.Priority},
-                    {"x-cancel-on-ha-failover", configuration.CancelOnHaFailover || connectionConfiguration.CancelOnHaFailover}
-                };
-            try
+        /// <inheritdoc />
+        public void HandleBasicDeliver(
+            string consumerTag,
+            ulong deliveryTag,
+            bool redelivered,
+            string exchange,
+            string routingKey,
+            IBasicProperties properties,
+            ReadOnlyMemory<byte> body
+        )
+        {
+            if (logger.IsDebugEnabled())
             {
-                Model = connection.CreateModel();
-
-                Model.BasicQos(0, configuration.PrefetchCount, false);
-
-                Model.BasicConsume(
-                    queue.Name,         // queue
-                    false,              // noAck
-                    consumerTag,        // consumerTag
-                    true,
-                    configuration.IsExclusive,
-                    arguments,          // arguments
-                    this);              // consumer
-
-                logger.InfoWrite("Declared Consumer. queue='{0}', consumer tag='{1}' prefetchcount={2} priority={3} x-cancel-on-ha-failover={4}",
-                                  queue.Name, consumerTag, configuration.PrefetchCount, configuration.Priority, configuration.CancelOnHaFailover);
+                logger.DebugFormat("Message delivered to consumer {consumerTag} with deliveryTag {deliveryTag}", consumerTag, deliveryTag);
             }
-            catch (Exception exception)
+
+            if (disposed)
             {
-                logger.ErrorWrite("Consume failed. queue='{0}', consumer tag='{1}', message='{2}'",
-                                 queue.Name, consumerTag, exception.Message);
-                return StartConsumingStatus.Failed;
+                // this message's consumer has stopped, so just return
+                logger.InfoFormat(
+                    "Consumer with consumerTag {consumerTag} on queue {queue} has stopped running. Ignoring message",
+                    ConsumerTag,
+                    Queue.Name
+                );
+
+                return;
             }
-            return StartConsumingStatus.Succeed;
+
+            var bodyBytes = body.ToArray();
+            var messageReceivedInfo = new MessageReceivedInfo(consumerTag, deliveryTag, redelivered, exchange, routingKey, Queue.Name);
+            var messageProperties = new MessageProperties(properties);
+            var context = new ConsumerExecutionContext(OnMessage, messageReceivedInfo, messageProperties, bodyBytes);
+
+            eventBus.Publish(new DeliveredMessageEvent(messageReceivedInfo, messageProperties, bodyBytes));
+            handlerRunner.InvokeUserMessageHandlerAsync(context)
+                .ContinueWith(async x =>
+                    {
+                        var ackStrategy = await x.ConfigureAwait(false);
+                        consumerDispatcher.QueueAction(() =>
+                        {
+                            var ackResult = ackStrategy(Model, deliveryTag);
+                            eventBus.Publish(new AckEvent(messageReceivedInfo, messageProperties, bodyBytes, ackResult));
+                        });
+                    },
+                    TaskContinuationOptions.ExecuteSynchronously
+                );
         }
 
         /// <summary>
@@ -115,91 +123,268 @@ namespace EasyNetQ.Consumer
         /// </summary>
         private void Cancel()
         {
-            // copy to temp variable to be thread safe.
-            var cancelled = Cancelled;
-            if(cancelled != null) cancelled(this);
-
-            var consumerCancelled = ConsumerCancelled;
-            if(consumerCancelled != null) consumerCancelled(this, new ConsumerEventArgs(ConsumerTag));
+            cancelled?.Invoke(this);
+            ConsumerCancelled?.Invoke(this, new ConsumerEventArgs(new [] {ConsumerTag}));
         }
 
-        public void HandleBasicConsumeOk(string consumerTag)
-        {
-            ConsumerTag = consumerTag;
-        }
-
+        /// <inheritdoc />
         public void HandleBasicCancelOk(string consumerTag)
         {
             Cancel();
         }
 
+        /// <inheritdoc />
         public void HandleBasicCancel(string consumerTag)
         {
             Cancel();
-            logger.InfoWrite("BasicCancel(Consumer Cancel Notification from broker) event received. " +
-                             "Consumer tag: " + consumerTag);
+            logger.InfoFormat(
+                "Consumer with consumerTag {consumerTag} has cancelled",
+                consumerTag
+            );
         }
 
+        /// <inheritdoc />
         public void HandleModelShutdown(object model, ShutdownEventArgs reason)
         {
-            logger.InfoWrite("Consumer '{0}', consuming from queue '{1}', has shutdown. Reason: '{2}'",
-                             ConsumerTag, queue.Name, reason.Cause);
+            logger.InfoFormat(
+                "Consumer with consumerTag {consumerTag} on queue {queue} has shutdown with reason {reason}",
+                ConsumerTag,
+                Queue.Name,
+                reason
+            );
         }
 
-        public void HandleBasicDeliver(
-            string consumerTag,
-            ulong deliveryTag,
-            bool redelivered,
-            string exchange,
-            string routingKey,
-            IBasicProperties properties,
-            byte[] body)
-        {
-            logger.DebugWrite("HandleBasicDeliver on consumer: {0}, deliveryTag: {1}", consumerTag, deliveryTag);
+        /// <inheritdoc />
+        public IModel Model { get; }
 
-            if (disposed)
-            {
-                // this message's consumer has stopped, so just return
-                logger.InfoWrite("Consumer has stopped running. Consumer '{0}' on queue '{1}'. Ignoring message",
-                    ConsumerTag, queue.Name);
-                return;
-            }
+        /// <inheritdoc />
+        public event EventHandler<ConsumerEventArgs> ConsumerCancelled;
 
-            if (onMessage == null)
-            {
-                logger.ErrorWrite("User consumer callback, 'onMessage' has not been set for consumer '{0}'." +
-                    "Please call InternalConsumer.StartConsuming before passing the consumer to basic.consume",
-                    ConsumerTag);
-                return;
-            }
-
-            var messageReceivedInfo = new MessageReceivedInfo(consumerTag, deliveryTag, redelivered, exchange, routingKey, queue.Name);
-            var messsageProperties = new MessageProperties(properties);
-            var context = new ConsumerExecutionContext(onMessage, messageReceivedInfo, messsageProperties, body, this);
-
-            consumerDispatcher.QueueAction(() =>
-                {
-                    eventBus.Publish(new DeliveredMessageEvent(messageReceivedInfo, messsageProperties, body));
-                    handlerRunner.InvokeUserMessageHandler(context);
-                });
-        }
-
-        private bool disposed;
-
+        /// <inheritdoc />
         public void Dispose()
         {
             if (disposed) return;
             disposed = true;
 
-            var model = Model;
-            if (model != null)
+            eventBus.Publish(new ConsumerModelDisposedEvent(ConsumerTag));
+        }
+    }
+
+    public class InternalConsumer : IInternalConsumer
+    {
+        private readonly IPersistentConnection connection;
+        private readonly IConsumerDispatcher consumerDispatcher;
+        private readonly IConventions conventions;
+        private readonly IEventBus eventBus;
+        private readonly IHandlerRunner handlerRunner;
+        private readonly ILog logger = LogProvider.For<InternalConsumer>();
+        private ICollection<BasicConsumer> basicConsumers;
+
+        private HashSet<BasicConsumer> cancelledConsumer;
+
+        private bool disposed;
+
+        private readonly object modelLock = new object();
+
+        public InternalConsumer(
+            IPersistentConnection connection,
+            IHandlerRunner handlerRunner,
+            IConsumerDispatcher consumerDispatcher,
+            IConventions conventions,
+            IEventBus eventBus
+        )
+        {
+            Preconditions.CheckNotNull(connection, "connection");
+            Preconditions.CheckNotNull(handlerRunner, "handlerRunner");
+            Preconditions.CheckNotNull(consumerDispatcher, "consumerDispatcher");
+            Preconditions.CheckNotNull(conventions, "conventions");
+            Preconditions.CheckNotNull(eventBus, "eventBus");
+
+            this.connection = connection;
+            this.handlerRunner = handlerRunner;
+            this.consumerDispatcher = consumerDispatcher;
+            this.conventions = conventions;
+            this.eventBus = eventBus;
+        }
+
+        public IModel Model { get; private set; }
+
+        /// <inheritdoc />
+        public event Action<IInternalConsumer> Cancelled;
+
+        /// <inheritdoc />
+        public StartConsumingStatus StartConsuming(
+            IReadOnlyCollection<Tuple<IQueue, MessageHandler>> queueConsumerPairs,
+            ConsumerConfiguration configuration
+        )
+        {
+            Preconditions.CheckNotNull(queueConsumerPairs, nameof(queueConsumerPairs));
+            Preconditions.CheckNotNull(configuration, nameof(configuration));
+
+            try
             {
-                // Queued because we may be on the RabbitMQ.Client dispatch thread.
-                consumerDispatcher.QueueAction(() =>
+                InitModel(configuration.PrefetchCount, true);
+
+                basicConsumers = new List<BasicConsumer>();
+
+                foreach (var p in queueConsumerPairs)
+                {
+                    var queue = p.Item1;
+                    var onMessage = p.Item2;
+                    var consumerTag = conventions.ConsumerTagConvention();
+                    try
                     {
-                        Model.Dispose();
-                        eventBus.Publish(new ConsumerModelDisposedEvent(ConsumerTag));
-                    });
+                        var basicConsumer = new BasicConsumer(SingleBasicConsumerCancelled, consumerDispatcher, queue, eventBus, handlerRunner, onMessage, Model);
+
+                        Model.BasicConsume(
+                            queue.Name, // queue
+                            false, // noAck
+                            consumerTag, // consumerTag
+                            true,
+                            configuration.IsExclusive,
+                            configuration.Arguments, // arguments
+                            basicConsumer // consumer
+                        );
+
+                        basicConsumers.Add(basicConsumer);
+
+                        logger.InfoFormat(
+                            "Declared consumer with consumerTag {consumerTag} on queue={queue} and configuration {configuration}",
+                            queue.Name,
+                            consumerTag,
+                            configuration
+                        );
+                    }
+                    catch (Exception exception)
+                    {
+                        logger.Error(
+                            exception,
+                            "Consume with consumerTag {consumerTag} on queue {queue} failed",
+                            queue.Name,
+                            consumerTag
+                        );
+                        return StartConsumingStatus.Failed;
+                    }
+                }
+
+                return StartConsumingStatus.Succeed;
+            }
+            catch (Exception exception)
+            {
+                logger.Error(
+                    exception,
+                    "Consume on queue {queue} failed",
+                    string.Join(";", queueConsumerPairs.Select(x => x.Item1.Name))
+                );
+                return StartConsumingStatus.Failed;
+            }
+        }
+
+        /// <inheritdoc />
+        public StartConsumingStatus StartConsuming(
+            IQueue queue,
+            MessageHandler onMessage,
+            ConsumerConfiguration configuration
+        )
+        {
+            Preconditions.CheckNotNull(queue, "queue");
+            Preconditions.CheckNotNull(onMessage, "onMessage");
+            Preconditions.CheckNotNull(configuration, "configuration");
+
+            var consumerTag = conventions.ConsumerTagConvention();
+            try
+            {
+                InitModel(configuration.PrefetchCount, false);
+
+                var basicConsumer = new BasicConsumer(SingleBasicConsumerCancelled, consumerDispatcher, queue, eventBus, handlerRunner, onMessage, Model);
+
+                basicConsumers = new[] { basicConsumer };
+
+                Model.BasicConsume(
+                    queue.Name, // queue
+                    false, // noAck
+                    consumerTag, // consumerTag
+                    true,
+                    configuration.IsExclusive,
+                    configuration.Arguments, // arguments
+                    basicConsumer // consumer
+                );
+
+                logger.InfoFormat(
+                    "Declared consumer with consumerTag {consumerTag} on queue {queue} and configuration {configuration}",
+                    consumerTag,
+                    queue.Name,
+                    configuration
+                );
+
+                return StartConsumingStatus.Succeed;
+            }
+            catch (Exception exception)
+            {
+                logger.Error(
+                    exception,
+                    "Consume with consumerTag {consumerTag} from queue {queue} has failed",
+                    consumerTag,
+                    queue.Name
+                );
+                return StartConsumingStatus.Failed;
+            }
+        }
+
+        /// <inheritdoc />
+        public void Dispose()
+        {
+            if (disposed) return;
+
+            disposed = true;
+
+            var model = Model;
+            if (model == null) return;
+
+            // Queued because we may be on the RabbitMQ.Client dispatch thread.
+            var disposedEvent = new AutoResetEvent(false);
+            consumerDispatcher.QueueAction(() =>
+            {
+                try
+                {
+                    foreach (var c in basicConsumers)
+                        c.Dispose();
+                    model.Dispose();
+                }
+                finally
+                {
+                    disposedEvent.Set();
+                }
+            }, true);
+
+            disposedEvent.WaitOne();
+        }
+
+        private void InitModel(ushort prefetchCount, bool globalQos)
+        {
+            if (Model == null)
+            {
+                lock (modelLock)
+                {
+                    if (Model == null)
+                    {
+                        Model = connection.CreateModel();
+                        Model.BasicQos(0, prefetchCount, globalQos);
+                    }
+                }
+            }
+        }
+
+        private void SingleBasicConsumerCancelled(BasicConsumer consumer)
+        {
+            if (cancelledConsumer == null)
+                cancelledConsumer = new HashSet<BasicConsumer>();
+            cancelledConsumer.Add(consumer);
+
+            if (cancelledConsumer.Count == basicConsumers.Count)
+            {
+                cancelledConsumer = null;
+                Cancelled?.Invoke(this);
             }
         }
     }

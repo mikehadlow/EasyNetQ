@@ -1,17 +1,14 @@
 ﻿using System;
 using System.Threading;
 using System.Threading.Tasks;
-using EasyNetQ.Loggers;
-using EasyNetQ.Tests.Tasks;
-using EasyNetQ.Tests.Tasks.Tasks;
+using EasyNetQ.Producer;
 using Net.CommandLine;
 
-namespace EasyNetQ.Tests.SimpleRequester
+namespace EasyNetQ.Tests.Tasks.SimpleRequester
 {
     public class SimpleRequester : ICommandLineTask, IDisposable
     {
-        private static readonly IBus bus = RabbitHutch.CreateBus("host=localhost",
-            x => x.Register(_ => new NoDebugLogger()));
+        private static readonly IBus bus = RabbitHutch.CreateBus("host=localhost");
 
         private static long count = 0;
 
@@ -20,7 +17,6 @@ namespace EasyNetQ.Tests.SimpleRequester
 
         public Task Run(CancellationToken cancellationToken)
         {
-
             timer = new Timer(OnTimer, null, publishIntervalMilliseconds, publishIntervalMilliseconds);
 
             Console.Out.WriteLine("Timer running, ctrl-C to end");
@@ -33,13 +29,13 @@ namespace EasyNetQ.Tests.SimpleRequester
         private static readonly object requestLock = new object();
         private static Timer timer;
 
-        static void OnTimer(object state)
+        private static void OnTimer(object state)
         {
             try
             {
                 lock (requestLock)
                 {
-                    bus.RequestAsync<TestRequestMessage, TestResponseMessage>(
+                    bus.Rpc.RequestAsync<TestRequestMessage, TestResponseMessage>(
                         new TestRequestMessage
                         {
                             Id = count,
@@ -55,7 +51,7 @@ namespace EasyNetQ.Tests.SimpleRequester
             }
         }
 
-        static void ResponseHandler(TestResponseMessage response)
+        private static void ResponseHandler(TestResponseMessage response)
         {
             Console.WriteLine("Response: {0}", response.Text);
             latencyRecorder.RegisterResponse(response.Id);

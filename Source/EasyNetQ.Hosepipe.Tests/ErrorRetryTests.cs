@@ -1,26 +1,24 @@
 ﻿// ReSharper disable InconsistentNaming
 
 using EasyNetQ.Consumer;
-using EasyNetQ.SystemMessages;
-using NUnit.Framework;
+using EasyNetQ.Tests;
+using Xunit;
 
 namespace EasyNetQ.Hosepipe.Tests
 {
-    [TestFixture]
     public class ErrorRetryTests
     {
-        private ErrorRetry errorRetry;
-        private IConventions conventions;
+        private readonly ErrorRetry errorRetry;
+        private readonly IConventions conventions;
 
-        [SetUp]
-        public void SetUp()
+        public ErrorRetryTests()
         {
-            var typeNameSerializer = new TypeNameSerializer();
+            var typeNameSerializer = new LegacyTypeNameSerializer();
             conventions = new Conventions(typeNameSerializer);
-            errorRetry = new ErrorRetry(new JsonSerializer(typeNameSerializer), new DefaultErrorMessageSerializer());
+            errorRetry = new ErrorRetry(new JsonSerializer(), new DefaultErrorMessageSerializer());
         }
 
-        [Test, Explicit("Requires a RabbitMQ instance and messages on disk in the given directory")]
+        [Fact][Explicit("Requires a RabbitMQ instance and messages on disk in the given directory")]
         public void Should_republish_all_error_messages_in_the_given_directory()
         {
             var parameters = new QueueParameters
@@ -28,34 +26,13 @@ namespace EasyNetQ.Hosepipe.Tests
                 HostName = "localhost",
                 Username = "guest",
                 Password = "guest",
-                MessageFilePath = @"C:\temp\MessageOutput"
+                MessagesOutputDirectory = @"C:\temp\MessageOutput"
             };
 
             var rawErrorMessages = new MessageReader()
-                .ReadMessages(parameters, conventions.ErrorQueueNamingConvention());
+                .ReadMessages(parameters, conventions.ErrorQueueNamingConvention(null));
 
             errorRetry.RetryErrors(rawErrorMessages, parameters);
-        }
-
-        [Test, Explicit("Requires a RabbitMQ instance")]
-        public void Should_republish_to_default_exchange()
-        {
-            var error = new Error
-                {
-                    Exchange = "", // default exchange
-                    RoutingKey = "hosepipe.test",
-                    Message = "Hosepipe test message",
-                    BasicProperties = new MessageProperties()
-                };
-            var parameters = new QueueParameters
-            {
-                HostName = "localhost",
-                Username = "guest",
-                Password = "guest",
-                MessageFilePath = @"C:\temp\MessageOutput"
-            };
-
-            errorRetry.RepublishError(error, parameters);
         }
     }
 }

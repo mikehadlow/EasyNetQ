@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using EasyNetQ.Topology;
 
@@ -7,10 +9,14 @@ namespace EasyNetQ.Consumer
     public interface IConsumerFactory : IDisposable
     {
         IConsumer CreateConsumer(
-            IQueue queue, 
-            Func<Byte[], MessageProperties, MessageReceivedInfo, Task> onMessage, 
-            IPersistentConnection connection,
-            IConsumerConfiguration configuration
-            );
+            IReadOnlyCollection<Tuple<IQueue, MessageHandler>> queueConsumerPairs,
+            ConsumerConfiguration configuration
+        );
+
+        IConsumer CreateConsumer(
+            IQueue queue,
+            MessageHandler onMessage,
+            ConsumerConfiguration configuration
+        );
     }
 }

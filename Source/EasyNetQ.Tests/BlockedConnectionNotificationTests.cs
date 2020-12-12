@@ -1,64 +1,53 @@
-﻿using System;
-// ReSharper disable InconsistentNaming
+﻿// ReSharper disable InconsistentNaming
 using EasyNetQ.Tests.Mocking;
-using NUnit.Framework;
+using NSubstitute;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
-using Rhino.Mocks;
+using System;
+using Xunit;
 
 namespace EasyNetQ.Tests
 {
-    [TestFixture]
     public class When_a_connection_becomes_blocked
     {
-        private MockBuilder mockBuilder;
-        private IConnection connection;
-        private IAdvancedBus advancedBus;
+        private readonly MockBuilder mockBuilder;
 
-        [SetUp]
-        public void SetUp()
+        public When_a_connection_becomes_blocked()
         {
             mockBuilder = new MockBuilder();
-
-            connection = mockBuilder.Connection;
-            advancedBus = mockBuilder.Bus.Advanced;
         }
 
-        [Test]
+        [Fact]
         public void Should_raise_blocked_event()
         {
-            var blocked = false;
-            advancedBus.Blocked += (s,e) => blocked = true;
-            connection.Raise(r => r.ConnectionBlocked += (s, e) => { }, connection, new ConnectionBlockedEventArgs("some reason"));
+            using var _ = mockBuilder.PersistentConnection.CreateModel();
 
-            Assert.That(blocked, Is.True);
+            var blocked = false;
+            mockBuilder.Bus.Advanced.Blocked += (s, e) => blocked = true;
+            mockBuilder.Connection.ConnectionBlocked += Raise.EventWith(new ConnectionBlockedEventArgs("some reason"));
+
+            Assert.True(blocked);
         }
     }
 
-    [TestFixture]
     public class When_a_connection_becomes_unblocked
     {
-        private MockBuilder mockBuilder;
-        private IConnection connection;
-        private IAdvancedBus advancedBus;
+        private readonly MockBuilder mockBuilder;
 
-        [SetUp]
-        public void SetUp()
+        public When_a_connection_becomes_unblocked()
         {
             mockBuilder = new MockBuilder();
-
-            connection = mockBuilder.Connection;
-            advancedBus = mockBuilder.Bus.Advanced;
         }
 
-        [Test]
+        [Fact]
         public void Should_raise_unblocked_event()
         {
-            var blocked = true;
-            advancedBus.Unblocked += (s,e) => blocked = false;
-            connection.Raise(r => r.ConnectionUnblocked += (s, e) => { }, connection, new EventArgs());
+            using var _ = mockBuilder.PersistentConnection.CreateModel();
 
-            Assert.That(blocked, Is.False);
+            var blocked = true;
+            mockBuilder.Bus.Advanced.Unblocked += (s, e) => blocked = false;
+            mockBuilder.Connection.ConnectionUnblocked += Raise.EventWith(EventArgs.Empty);
+            Assert.False(blocked);
         }
     }
 }

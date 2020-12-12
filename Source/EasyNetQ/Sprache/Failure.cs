@@ -2,34 +2,33 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace Sprache
+namespace EasyNetQ.Sprache
 {
-    sealed class Failure<T> : IFailure<T>
+    internal sealed class Failure<T> : IFailure<T>
     {
-        readonly Func<string> _message;
-        readonly Func<IEnumerable<string>> _expectations;
-        readonly Input _input;
+        private readonly Func<IEnumerable<string>> _expectations;
+        private readonly Func<string> _message;
 
         public Failure(Input input, Func<string> message, Func<IEnumerable<string>> expectations)
         {
-            _input = input;
+            FailedInput = input;
             _message = message;
             _expectations = expectations;
         }
 
-        public string Message { get { return _message(); } }
+        public string Message => _message();
 
-        public IEnumerable<string> Expectations { get { return _expectations(); } }
+        public IEnumerable<string> Expectations => _expectations();
 
-        public Input FailedInput { get { return _input; } }
+        public Input FailedInput { get; private set; }
 
         public override string ToString()
         {
             var expMsg = "";
-            
+
             if (Expectations.Any())
                 expMsg = " expected " + Expectations.Aggregate((e1, e2) => e1 + " or " + e2);
-            
+
             return string.Format("Parsing failure: {0};{1} ({2}).", Message, expMsg, FailedInput);
         }
     }

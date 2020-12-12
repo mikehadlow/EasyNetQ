@@ -1,21 +1,16 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 
 namespace EasyNetQ.Tests.Tasks
 {
-    class Program
+    internal class Program
     {
-        static int Main(string[] args)
+        private static int Main(string[] args)
         {
             using (var interactiveTaskRunner = new CommandLineTaskRunner())
             {
                 try
                 {
-                    var main = interactiveTaskRunner.Run();
-                    Console.ReadLine();
-                    return main;
+                    return interactiveTaskRunner.Run();
                 }
                 catch (Exception e)
                 {

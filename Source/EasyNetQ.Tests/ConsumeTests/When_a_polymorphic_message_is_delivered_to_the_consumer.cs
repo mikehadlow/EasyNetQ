@@ -1,21 +1,21 @@
-﻿using RabbitMQ.Client.Framing;
-// ReSharper disable InconsistentNaming
-using System.Threading;
-using System.Threading.Tasks;
+﻿// ReSharper disable InconsistentNaming
 using EasyNetQ.Tests.Mocking;
 using EasyNetQ.Topology;
-using NUnit.Framework;
+using FluentAssertions;
+using RabbitMQ.Client.Framing;
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Xunit;
 
 namespace EasyNetQ.Tests.ConsumeTests
 {
-    [TestFixture]
-    public class When_a_polymorphic_message_is_delivered_to_the_consumer
+    public class When_a_polymorphic_message_is_delivered_to_the_consumer : IDisposable
     {
         private MockBuilder mockBuilder;
-        ITestMessageInterface receivedMessage;
+        private ITestMessageInterface receivedMessage;
 
-        [SetUp]
-        public void SetUp()
+        public When_a_polymorphic_message_is_delivered_to_the_consumer()
         {
             mockBuilder = new MockBuilder();
 
@@ -29,10 +29,10 @@ namespace EasyNetQ.Tests.ConsumeTests
                 }));
 
             var publishedMessage = new Implementation { Text = "Hello Polymorphs!" };
-            var body = new JsonSerializer(new TypeNameSerializer()).MessageToBytes(publishedMessage);
+            var body = new JsonSerializer().MessageToBytes(typeof(Implementation), publishedMessage);
             var properties = new BasicProperties
                 {
-                    Type = new TypeNameSerializer().Serialize(typeof(Implementation))
+                    Type = new DefaultTypeNameSerializer().Serialize(typeof(Implementation))
                 };
 
             mockBuilder.Consumers[0].HandleBasicDeliver(
@@ -45,15 +45,23 @@ namespace EasyNetQ.Tests.ConsumeTests
                 body
                 );
 
-            are.WaitOne(1000);
+            if (!are.WaitOne(5000))
+            {
+                throw new TimeoutException();
+            }
         }
 
-        [Test]
+        public void Dispose()
+        {
+            mockBuilder.Bus.Dispose();
+        }
+
+        [Fact]
         public void Should_correctly_deserialize_message()
         {
-            receivedMessage.ShouldNotBeNull();
-            receivedMessage.GetType().ShouldEqual(typeof (Implementation));
-            receivedMessage.Text.ShouldEqual("Hello Polymorphs!");
+            receivedMessage.Should().NotBeNull();
+            receivedMessage.Should().BeOfType<Implementation>();
+            receivedMessage.Text.Should().Be("Hello Polymorphs!");
         }
     }
 

@@ -1,122 +1,141 @@
-﻿using EasyNetQ.Consumer;
+﻿using System;
+using EasyNetQ.Consumer;
+using EasyNetQ.DI;
 using EasyNetQ.Events;
 using EasyNetQ.Interception;
 using EasyNetQ.Producer;
-using NUnit.Framework;
+using FluentAssertions;
+using NSubstitute;
 using RabbitMQ.Client;
-using RabbitMQ.Client.Events;
-using Rhino.Mocks;
+using Xunit;
 
 namespace EasyNetQ.Tests
 {
-    [TestFixture]
-    public class AdvancedBusEventHandlersTests
+    public class AdvancedBusEventHandlersTests : IDisposable
     {
-        private AdvancedBusEventHandlers advancedBusEventHandlers;
-        private IEventBus eventBus;
-        private bool connectedCalled = false;
-        private bool disconnectedCalled = false;
-        private bool blockedCalled = false;
-        private ConnectionBlockedEventArgs connectionBlockedEventArgs;
-        private bool unBlockedCalled = false;
-        private bool messageReturnedCalled = false;
-        private MessageReturnedEventArgs messageReturnedEventArgs;
-
-        [SetUp]
-        public void SetUp()
+        public AdvancedBusEventHandlersTests()
         {
-            advancedBusEventHandlers = new AdvancedBusEventHandlers(
-                connected: (s, e) => connectedCalled = true,
-                disconnected: (s, e) => disconnectedCalled = true,
-                blocked: (s, e) =>
+            var advancedBusEventHandlers = new AdvancedBusEventHandlers(
+                (s, e) =>
+                {
+                    connectedCalled = true;
+                    connectedEventArgs = e;
+                },
+                (s, e) =>
+                {
+                    disconnectedCalled = true;
+                    disconnectedEventArgs = e;
+                },
+                (s, e) =>
                 {
                     blockedCalled = true;
-                    connectionBlockedEventArgs = e;
+                    blockedEventArgs = e;
                 },
-                unblocked: (s, e) => unBlockedCalled = true,
-                messageReturned: (s, e) =>
+                (s, e) => unBlockedCalled = true,
+                (s, e) =>
                 {
                     messageReturnedCalled = true;
                     messageReturnedEventArgs = e;
-                });
-
-            var connectionFactory = MockRepository.GenerateStub<IConnectionFactory>();
-            connectionFactory.Stub(x => x.Succeeded).Return(true);
-            connectionFactory.Stub(x => x.CreateConnection()).Return(MockRepository.GenerateStub<IConnection>());
-            connectionFactory.Stub(x => x.CurrentHost).Return(new HostConfiguration());
-            connectionFactory.Stub(x => x.Configuration).Return(new ConnectionConfiguration());
+                }
+            );
 
             eventBus = new EventBus();
 
-            var logger = MockRepository.GenerateStub<IEasyNetQLogger>();
-            var persistentConnectionFactory = new PersistentConnectionFactory(logger, connectionFactory, eventBus);            
-
-            var advancedBus = new RabbitAdvancedBus(
-                connectionFactory,
-                MockRepository.GenerateStub<IConsumerFactory>(),
-                logger,
-                MockRepository.GenerateStub<IClientCommandDispatcherFactory>(),
-                MockRepository.GenerateStub<IPublishConfirmationListener>(),
+            advancedBus = new RabbitAdvancedBus(
+                Substitute.For<IPersistentConnection>(),
+                Substitute.For<IConsumerFactory>(),
+                Substitute.For<IClientCommandDispatcher>(),
+                Substitute.For<IPublishConfirmationListener>(),
                 eventBus,
-                MockRepository.GenerateStub<IHandlerCollectionFactory>(),
-                MockRepository.GenerateStub<IContainer>(),
-                MockRepository.GenerateStub<ConnectionConfiguration>(),
-                MockRepository.GenerateStub<IProduceConsumeInterceptor>(),
-                MockRepository.GenerateStub<IMessageSerializationStrategy>(),
-                MockRepository.GenerateStub<IConventions>(),
-                advancedBusEventHandlers,
-                persistentConnectionFactory);
+                Substitute.For<IHandlerCollectionFactory>(),
+                Substitute.For<IServiceResolver>(),
+                Substitute.For<ConnectionConfiguration>(),
+                Substitute.For<IProduceConsumeInterceptor>(),
+                Substitute.For<IMessageSerializationStrategy>(),
+                Substitute.For<IConventions>(),
+                Substitute.For<IPullingConsumerFactory>(),
+                advancedBusEventHandlers
+            );
         }
 
-        [Test]
-        public void AdvancedBusEventHandlers_Connected_handler_is_called_when_advancedbus_connects_for_the_first_time()
+        public void Dispose()
         {
-            Assert.IsTrue(connectedCalled, "The AdvancedBusEventHandlers Connected event handler wasn't called during RabbitAdvancedBus instantiation.");
+            advancedBus.Dispose();
         }
 
-        [Test]
-        public void AdvancedBusEventHandlers_Connected_handler_is_called()
-        {
-            eventBus.Publish(new ConnectionCreatedEvent());
-            Assert.IsTrue(connectedCalled, "The AdvancedBusEventHandlers Connected event handler wasn't called after a ConnectionCreatedEvent publish.");
-        }
+        private readonly IEventBus eventBus;
+        private bool connectedCalled;
+        private bool disconnectedCalled;
+        private bool blockedCalled;
+        private BlockedEventArgs blockedEventArgs;
+        private bool unBlockedCalled;
+        private bool messageReturnedCalled;
+        private MessageReturnedEventArgs messageReturnedEventArgs;
+        private readonly IAdvancedBus advancedBus;
+        private ConnectedEventArgs connectedEventArgs;
+        private DisconnectedEventArgs disconnectedEventArgs;
 
-        [Test]
-        public void AdvancedBusEventHandlers_Disconnected_handler_is_called()
-        {
-            eventBus.Publish(new ConnectionDisconnectedEvent());
-            Assert.IsTrue(disconnectedCalled, "The AdvancedBusEventHandlers Disconnected event handler wasn't called after a ConnectionDisconnectedEvent publish.");
-        }
-
-        [Test]
+        [Fact]
         public void AdvancedBusEventHandlers_Blocked_handler_is_called()
         {
-            var connectionBlockedEvent = new ConnectionBlockedEvent("a random reason");
+            var @event = new ConnectionBlockedEvent("a random reason");
 
-            eventBus.Publish(connectionBlockedEvent);
-            Assert.IsTrue(blockedCalled, "The AdvancedBusEventHandlers Blocked event handler wasn't called after a ConnectionBlockedEvent publish.");
-            Assert.IsNotNull(connectionBlockedEventArgs, "The AdvancedBusEventHandlers Blocked event handler received a null ConnectionBlockedEventArgs");
-            Assert.IsTrue(connectionBlockedEvent.Reason == connectionBlockedEventArgs.Reason, "The published ConnectionBlockedEvent Reason isn't the same object than the one received in AdvancedBusEventHandlers Blocked ConnectionBlockedEventArgs.");
+            eventBus.Publish(@event);
+            blockedCalled.Should().BeTrue();
+            blockedEventArgs.Should().NotBeNull();
+            blockedEventArgs.Reason.Should().Be(@event.Reason);
         }
 
-        [Test]
+        [Fact]
+        public void AdvancedBusEventHandlers_Connected_handler_is_called_when_connection_recovered()
+        {
+            eventBus.Publish(new ConnectionRecoveredEvent(new AmqpTcpEndpoint()));
+            connectedCalled.Should().BeTrue();
+            connectedEventArgs.Hostname.Should().Be("localhost");
+            connectedEventArgs.Port.Should().Be(5672);
+        }
+
+        [Fact]
+        public void AdvancedBusEventHandlers_Connected_handler_is_called_when_connection_created()
+        {
+            eventBus.Publish(new ConnectionCreatedEvent(new AmqpTcpEndpoint()));
+            connectedCalled.Should().BeTrue();
+            connectedEventArgs.Hostname.Should().Be("localhost");
+            connectedEventArgs.Port.Should().Be(5672);
+        }
+
+        [Fact]
+        public void AdvancedBusEventHandlers_Disconnected_handler_is_called()
+        {
+            var @event = new ConnectionDisconnectedEvent(new AmqpTcpEndpoint(), "a random reason");
+            eventBus.Publish(@event);
+            disconnectedCalled.Should().BeTrue();
+            disconnectedEventArgs.Should().NotBeNull();
+            disconnectedEventArgs.Hostname.Should().Be("localhost");
+            disconnectedEventArgs.Port.Should().Be(5672);
+            disconnectedEventArgs.Reason.Should().Be("a random reason");
+        }
+
+        [Fact]
+        public void AdvancedBusEventHandlers_MessageReturned_handler_is_called()
+        {
+            var @event = new ReturnedMessageEvent(
+                null, new byte[0], new MessageProperties(), new MessageReturnedInfo("my.exchange", "routing.key", "reason")
+            );
+
+            eventBus.Publish(@event);
+            messageReturnedCalled.Should().BeTrue();
+            messageReturnedEventArgs.Should().NotBeNull();
+            messageReturnedEventArgs.MessageBody.Should().Equal(@event.Body);
+            messageReturnedEventArgs.MessageProperties.Should().Be(@event.Properties);
+            messageReturnedEventArgs.MessageReturnedInfo.Should().Be(@event.Info);
+         }
+
+        [Fact]
         public void AdvancedBusEventHandlers_Unblocked_handler_is_called()
         {
             eventBus.Publish(new ConnectionUnblockedEvent());
-            Assert.IsTrue(unBlockedCalled, "The AdvancedBusEventHandlers Unblocked event handler wasn't called after a ConnectionUnblockedEvent publish.");
-        }
-
-        [Test]
-        public void AdvancedBusEventHandlers_MessageReturned_handler_is_called()
-        {
-            var returnedMessageEvent = new ReturnedMessageEvent(new byte[0], new MessageProperties(), new MessageReturnedInfo("my.exchange", "routing.key", "reason"));
-
-            eventBus.Publish(returnedMessageEvent);
-            Assert.IsTrue(messageReturnedCalled, "The AdvancedBusEventHandlers MessageReturned event handler wasn't called after a ReturnedMessageEvent publish.");
-            Assert.IsNotNull(messageReturnedEventArgs, "The AdvancedBusEventHandlers MessageReturned event handler received a null MessageReturnedEventArgs.");
-            Assert.IsTrue(returnedMessageEvent.Body == messageReturnedEventArgs.MessageBody, "The published ReturnedMessageEvent Body isn't the same object than the one received in AdvancedBusEventHandlers MessageReturned MessageReturnedEventArgs.");
-            Assert.IsTrue(returnedMessageEvent.Properties == messageReturnedEventArgs.MessageProperties, "The published ReturnedMessageEvent Properties isn't the same object than the one received in AdvancedBusEventHandlers MessageReturned MessageReturnedEventArgs.");
-            Assert.IsTrue(returnedMessageEvent.Info == messageReturnedEventArgs.MessageReturnedInfo, "The published ReturnedMessageEvent Info isn't the same object than the one received in AdvancedBusEventHandlers MessageReturned MessageReturnedEventArgs.");
+            unBlockedCalled.Should().BeTrue();
         }
     }
 }

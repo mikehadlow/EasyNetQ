@@ -1,43 +1,46 @@
 ﻿// ReSharper disable InconsistentNaming
 
-using System;
-using System.Text;
 using EasyNetQ.SystemMessages;
-using NUnit.Framework;
+using EasyNetQ.Tests;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Exceptions;
+using System.Text;
+using Xunit;
+using Xunit.Abstractions;
 
 namespace EasyNetQ.Hosepipe.Tests
 {
-    [TestFixture]
     public class ErrorMessageRepublishSpike
     {
-        readonly ISerializer serializer = new JsonSerializer(new TypeNameSerializer());
+        private readonly ITestOutputHelper testOutputHelper;
+        private readonly ISerializer serializer = new JsonSerializer();
 
-        [SetUp]
-        public void SetUp() {}
-
-        [Test]
-        public void Should_deserialise_error_message_correctly()
+        public ErrorMessageRepublishSpike(ITestOutputHelper testOutputHelper)
         {
-            var error = serializer.BytesToMessage<Error>(Encoding.UTF8.GetBytes(errorMessage));
+            this.testOutputHelper = testOutputHelper;
+        }
+
+        [Fact]
+        public void Should_deserialize_error_message_correctly()
+        {
+            var error = (Error)serializer.BytesToMessage(typeof(Error), Encoding.UTF8.GetBytes(errorMessage));
 
             error.RoutingKey.ShouldEqual("originalRoutingKey");
             error.Message.ShouldEqual("{ Text:\"Hello World\"}");
         }
 
-        [Test]
-        public void Should_fail_to_deseralize_some_other_random_message()
+        [Fact]
+        public void Should_fail_to_deserialize_some_other_random_message()
         {
             const string randomMessage = "{\"Text\":\"Hello World\"}";
-            var error = serializer.BytesToMessage<Error>(Encoding.UTF8.GetBytes(randomMessage));
+            var error = (Error)serializer.BytesToMessage(typeof(Error), Encoding.UTF8.GetBytes(randomMessage));
             error.Message.ShouldBeNull();
         }
 
-        [Test, Explicit("Requires a localhost instance of RabbitMQ to run")]
+        [Fact][Explicit("Requires a localhost instance of RabbitMQ to run")]
         public void Should_be_able_to_republish_message()
         {
-            var error = serializer.BytesToMessage<Error>(Encoding.UTF8.GetBytes(errorMessage));
+            var error = (Error)serializer.BytesToMessage(typeof(Error), Encoding.UTF8.GetBytes(errorMessage));
 
             var connectionFactory = new ConnectionFactory
             {
@@ -46,29 +49,26 @@ namespace EasyNetQ.Hosepipe.Tests
                 Password = "guest"
             };
 
-            using (var connection = connectionFactory.CreateConnection())
-            using (var model = connection.CreateModel())
+            using var connection = connectionFactory.CreateConnection();
+            using var model = connection.CreateModel();
+            try
             {
-                try
-                {
-                    model.ExchangeDeclarePassive(error.Exchange);
+                model.ExchangeDeclarePassive(error.Exchange);
 
-                    var properties = model.CreateBasicProperties();
-                    error.BasicProperties.CopyTo(properties);
+                var properties = model.CreateBasicProperties();
+                error.BasicProperties.CopyTo(properties);
 
-                    var body = Encoding.UTF8.GetBytes(error.Message);
+                var body = Encoding.UTF8.GetBytes(error.Message);
 
-                    model.BasicPublish(error.Exchange, error.RoutingKey, properties, body);
-                }
-                catch (OperationInterruptedException)
-                {
-                    Console.WriteLine("The exchange, '{0}', described in the error message does not exist on '{1}', '{2}'",
-                        error.Exchange, connectionFactory.HostName, connectionFactory.VirtualHost);
-                }
+                model.BasicPublish(error.Exchange, error.RoutingKey, properties, body);
+            }
+            catch (OperationInterruptedException)
+            {
+                testOutputHelper.WriteLine("The exchange, '{0}', described in the error message does not exist on '{1}', '{2}'", error.Exchange, connectionFactory.HostName, connectionFactory.VirtualHost);
             }
         }
 
-        private const string errorMessage = 
+        private const string errorMessage =
 @"{
     ""RoutingKey"":""originalRoutingKey"",
     ""Exchange"":""orginalExchange"",

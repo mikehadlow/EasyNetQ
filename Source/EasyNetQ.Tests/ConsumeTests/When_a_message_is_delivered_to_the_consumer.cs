@@ -1,83 +1,72 @@
 // ReSharper disable InconsistentNaming
-using NUnit.Framework;
-using Rhino.Mocks;
+
+using EasyNetQ.Consumer;
+using FluentAssertions;
+using NSubstitute;
+using Xunit;
 
 namespace EasyNetQ.Tests.ConsumeTests
 {
-    [TestFixture]
     public class When_a_message_is_delivered_to_the_consumer : ConsumerTestBase
     {
         protected override void AdditionalSetUp()
         {
-            StartConsumer((body, properties, info) => { });
+            StartConsumer((body, properties, info) => AckStrategies.Ack);
             DeliverMessage();
         }
 
-        [Test]
+        [Fact]
         public void Should_invoke_consumer()
         {
-            ConsumerWasInvoked.ShouldBeTrue();
+            ConsumerWasInvoked.Should().BeTrue();
         }
 
-        [Test]
+        [Fact]
         public void Should_deliver_the_message_body()
         {
-            DeliveredMessageBody.ShouldBeTheSameAs(OriginalBody);
+            DeliveredMessageBody.Should().BeEquivalentTo(OriginalBody);
         }
 
-        [Test]
+        [Fact]
         public void Should_deliver_the_message_properties()
         {
-            DeliveredMessageProperties.Type.ShouldBeTheSameAs(OriginalProperties.Type);
+            DeliveredMessageProperties.Type.Should().BeSameAs(OriginalProperties.Type);
         }
 
-        [Test]
+        [Fact]
         public void Should_deliver_the_consumer_tag()
         {
-            DeliveredMessageInfo.ConsumerTag.ShouldEqual(ConsumerTag);
+            DeliveredMessageInfo.ConsumerTag.Should().Be(ConsumerTag);
         }
 
-        [Test]
+        [Fact]
         public void Should_deliver_the_delivery_tag()
         {
-            DeliveredMessageInfo.DeliverTag.ShouldEqual(DeliverTag);
+            DeliveredMessageInfo.DeliveryTag.Should().Be(DeliverTag);
         }
 
-        [Test]
+        [Fact]
         public void Should_deliver_the_exchange_name()
         {
-            DeliveredMessageInfo.Exchange.ShouldEqual("the_exchange");
+            DeliveredMessageInfo.Exchange.Should().Be("the_exchange");
         }
 
-        [Test]
+        [Fact]
         public void Should_deliver_the_routing_key()
         {
-            DeliveredMessageInfo.RoutingKey.ShouldEqual("the_routing_key");
+            DeliveredMessageInfo.RoutingKey.Should().Be("the_routing_key");
         }
 
-        [Test]
+        [Fact]
         public void Should_deliver_redelivered_flag()
         {
-            DeliveredMessageInfo.Redelivered.ShouldBeFalse();
+            DeliveredMessageInfo.Redelivered.Should().BeFalse();
         }
 
-        [Test]
+        [Fact]
         public void Should_ack_the_message()
         {
-            MockBuilder.Channels[0].AssertWasCalled(x => x.BasicAck(DeliverTag, false));
-        }
-
-        [Test]
-        public void Should_write_debug_message()
-        {
-            MockBuilder.Logger.AssertWasCalled(x =>
-                x.DebugWrite("Received \n\tRoutingKey: '{0}'\n\tCorrelationId: '{1}'\n\tConsumerTag: '{2}'" +
-                    "\n\tDeliveryTag: {3}\n\tRedelivered: {4}",
-                            "the_routing_key",
-                            "the_correlation_id",
-                            ConsumerTag,
-                            DeliverTag,
-                            false));
+            MockBuilder.Channels[0].Received().BasicAck(DeliverTag, false);
         }
     }
 }

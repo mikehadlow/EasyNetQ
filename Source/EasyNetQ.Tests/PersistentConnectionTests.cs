@@ -1,53 +1,44 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
-using NUnit.Framework;
+using EasyNetQ.Tests.Mocking;
+using FluentAssertions;
+using NSubstitute;
 using RabbitMQ.Client;
-using Rhino.Mocks;
+using Xunit;
 
 namespace EasyNetQ.Tests
 {
-    [TestFixture]
     public class PersistentConnectionTests
     {
-        [Test]
-        public void If_connects_after_disposal_should_redispose_underlying_connection()
+        [Fact]
+        public void Should_be_not_connected_if_connection_not_established()
         {
-            var logger = MockRepository.GenerateMock<IEasyNetQLogger>();
-            var eventBus = MockRepository.GenerateMock<IEventBus>();
-            var connectionFactory = MockRepository.GenerateMock<IConnectionFactory>();
-            var mockConnection = MockRepository.GenerateMock<IConnection>();
-            PersistentConnection mockPersistentConnection = MockRepository.GenerateMock<PersistentConnection>(connectionFactory, logger, eventBus);
+            var mockBuilder = new MockBuilder();
+            mockBuilder.ConnectionFactory.CreateConnection(Arg.Any<IList<AmqpTcpEndpoint>>())
+                .Returns(c => throw new Exception("Test"));
 
-            // This test is constructed using small delays, such that the IConnectionFactory will return a connection just _after the IPersistentConnection has been disposed.
-            TimeSpan shimDelay = TimeSpan.FromSeconds(0.5); 
-            connectionFactory.Expect(cf => cf.CreateConnection()).WhenCalled(a =>
-            {
-                Thread.Sleep(shimDelay.Double());
-                a.ReturnValue = mockConnection;
-            }).Repeat.Once();
+            using var connection = new PersistentConnection(
+                new ConnectionConfiguration(), mockBuilder.ConnectionFactory, mockBuilder.EventBus
+            );
 
-            Task.Factory.StartNew(() => { mockPersistentConnection.Initialize(); }); // Start the persistent connection attempting to connect.
+            Assert.Throws<Exception>(() => connection.CreateModel());
 
-            Thread.Sleep(shimDelay); // Allow some time for the persistent connection code to try to create a connection.
+            connection.IsConnected.Should().BeFalse();
+            mockBuilder.ConnectionFactory.Received().CreateConnection(Arg.Any<IList<AmqpTcpEndpoint>>());
+        }
 
-            // First call to dispose.  Because CreateConnection() is stubbed to delay for shimDelay.Double(), it will not yet have returned a connection.  So when the PersistentConnection is disposed, no underlying IConnection should yet be disposed.
-            mockPersistentConnection.Dispose();
-            mockConnection.AssertWasNotCalled(underlyingConnection => underlyingConnection.Dispose());
+        [Fact]
+        public void Should_establish_connection_when_persistent_connection_created()
+        {
+            var mockBuilder = new MockBuilder();
+            using var connection = new PersistentConnection(
+                new ConnectionConfiguration(), mockBuilder.ConnectionFactory, mockBuilder.EventBus
+            );
 
-            Thread.Sleep(shimDelay.Double()); // Allow time for persistent connection code to _return its connection ...
+            connection.CreateModel();
 
-            // Assert that the connection returned from connectionFactory.CreateConnection() (_after the PersistentConnection was disposed), still gets disposed.
-            mockConnection.AssertWasCalled(latedCreatedUnderlyingConnection => latedCreatedUnderlyingConnection.Dispose());
-
-            // Ensure that PersistentConnection also did not flag (eg to IPersistentChannel) the late-made connection as successful.
-            connectionFactory.AssertWasNotCalled(c => c.Success());
-            // Ensure that PersistentConnection does not retry after was disposed.
-            connectionFactory.AssertWasNotCalled(c => c.Next());
-
+            connection.IsConnected.Should().BeTrue();
+            mockBuilder.ConnectionFactory.Received(1).CreateConnection(Arg.Any<IList<AmqpTcpEndpoint>>());
         }
     }
 }

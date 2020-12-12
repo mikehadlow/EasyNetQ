@@ -1,11 +1,10 @@
 ﻿using System;
 using System.Threading;
 using System.Threading.Tasks;
-using EasyNetQ.Tests.Tasks;
-using EasyNetQ.Tests.Tasks.Tasks;
+using EasyNetQ.Producer;
 using Net.CommandLine;
 
-namespace EasyNetQ.Tests.Performance.Consumer
+namespace EasyNetQ.Tests.Tasks
 {
     public class TestPerformanceConsumer : ICommandLineTask, IDisposable
     {
@@ -14,10 +13,7 @@ namespace EasyNetQ.Tests.Performance.Consumer
 
         public Task Run(CancellationToken cancellationToken)
         {
-            var logger = new NoDebugLogger();
-
-            bus = RabbitHutch.CreateBus("host=localhost;product=consumer", 
-                x => x.Register<IEasyNetQLogger>(_ => logger));
+            bus = RabbitHutch.CreateBus("host=localhost;product=consumer");
 
             int messageCount = 0;
             timer = new Timer(state =>
@@ -26,7 +22,7 @@ namespace EasyNetQ.Tests.Performance.Consumer
                 Interlocked.Exchange(ref messageCount, 0);
             }, null, 1000, 1000);
 
-            bus.Subscribe<TestPerformanceMessage>("consumer", message => Interlocked.Increment(ref messageCount));
+            bus.PubSub.Subscribe<TestPerformanceMessage>("consumer", message => Interlocked.Increment(ref messageCount));
 
             Console.WriteLine("press enter to exit");
             Console.ReadLine();

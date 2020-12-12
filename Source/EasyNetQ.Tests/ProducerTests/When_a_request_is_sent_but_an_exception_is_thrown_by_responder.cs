@@ -1,75 +1,82 @@
-﻿using System.Collections.Generic;
-using RabbitMQ.Client.Framing;
-// ReSharper disable InconsistentNaming
-using RabbitMQ.Client;
-using Rhino.Mocks;
+﻿// ReSharper disable InconsistentNaming
 using System;
+using System.Collections.Generic;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using EasyNetQ.Events;
 using EasyNetQ.Tests.Mocking;
-using NUnit.Framework;
+using Xunit;
 
 namespace EasyNetQ.Tests.ProducerTests
 {
-    [TestFixture]
-    public class When_a_request_is_sent_but_an_exception_is_thrown_by_responder
+    public class When_a_request_is_sent_but_an_exception_is_thrown_by_responder : IDisposable
     {
-        private MockBuilder mockBuilder;
-        private TestRequestMessage requestMessage;
-        private string _correlationId;
+        private readonly MockBuilder mockBuilder;
+        private readonly TestRequestMessage requestMessage;
+        private readonly string correlationId;
 
-        [SetUp]
-        public void SetUp()
+        public When_a_request_is_sent_but_an_exception_is_thrown_by_responder()
         {
-            mockBuilder = new MockBuilder();
+            correlationId = Guid.NewGuid().ToString();
+            mockBuilder = new MockBuilder(
+                c => c.Register<ICorrelationIdGenerationStrategy>(
+                    _ => new StaticCorrelationIdGenerationStrategy(correlationId)
+                )
+            );
 
             requestMessage = new TestRequestMessage();
-
-            mockBuilder.NextModel.Stub(x => x.BasicPublish(null, null, false, null, null))
-                       .IgnoreArguments()
-                       .WhenCalled(invocation =>
-                       {
-                           var properties = (IBasicProperties)invocation.Arguments[3];
-                           _correlationId = properties.CorrelationId;
-                       });
         }
 
-        [Test]
-        [ExpectedException(ExpectedException = typeof(EasyNetQResponderException))]
-        public void Should_throw_an_EasyNetQResponderException()
+        public void Dispose()
         {
-            try
-            {
-                var task = mockBuilder.Bus.RequestAsync<TestRequestMessage, TestResponseMessage>(requestMessage);
-                DeliverMessage(_correlationId, null);
-                task.Wait(1000);
-            }
-            catch (AggregateException aggregateException)
-            {
-                throw aggregateException.InnerException;
-            }
+            mockBuilder.Bus.Dispose();
         }
 
-        [Test]
-        [ExpectedException(ExpectedException = typeof(EasyNetQResponderException), ExpectedMessage = "Why you are so bad with me?")]
-        public void Should_throw_an_EasyNetQResponderException_with_a_specific_exception_message()
+        [Fact]
+        public async Task Should_throw_an_EasyNetQResponderException()
         {
-            try
+            await Assert.ThrowsAsync<EasyNetQResponderException>(async () =>
             {
-                var task = mockBuilder.Bus.RequestAsync<TestRequestMessage, TestResponseMessage>(requestMessage);
-                DeliverMessage(_correlationId, "Why you are so bad with me?");
-                task.Wait(1000);
-            }
-            catch (AggregateException aggregateException)
-            {
-                throw aggregateException.InnerException;
-            }
+                var waiter = new CountdownEvent(2);
+
+                mockBuilder.EventBus.Subscribe<PublishedMessageEvent>(_ => waiter.Signal());
+                mockBuilder.EventBus.Subscribe<StartConsumingSucceededEvent>(_ => waiter.Signal());
+
+                var task = mockBuilder.Rpc.RequestAsync<TestRequestMessage, TestResponseMessage>(requestMessage);
+                if (!waiter.Wait(5000))
+                    throw new TimeoutException();
+
+                DeliverMessage(null);
+                await task;
+            });
         }
 
-        protected void DeliverMessage(string correlationId, string exceptionMessage)
+        [Fact]
+        public async Task Should_throw_an_EasyNetQResponderException_with_a_specific_exception_message()
+        {
+            await Assert.ThrowsAsync<EasyNetQResponderException>(async () =>
+            {
+                var waiter = new CountdownEvent(2);
+
+                mockBuilder.EventBus.Subscribe<PublishedMessageEvent>(_ => waiter.Signal());
+                mockBuilder.EventBus.Subscribe<StartConsumingSucceededEvent>(_ => waiter.Signal());
+
+                var task = mockBuilder.Rpc.RequestAsync<TestRequestMessage, TestResponseMessage>(requestMessage);
+                if (!waiter.Wait(5000))
+                    throw new TimeoutException();
+
+                DeliverMessage("Why you are so bad with me?");
+
+                await task;
+            }); // ,"Why you are so bad with me?"
+        }
+
+        private void DeliverMessage(string exceptionMessage)
         {
             var properties = new BasicProperties
             {
-                Type = "EasyNetQ.Tests.TestResponseMessage:EasyNetQ.Tests.Messages",
+                Type = "EasyNetQ.Tests.TestResponseMessage, EasyNetQ.Tests",
                 CorrelationId = correlationId,
                 Headers = new Dictionary<string, object>
                 {
@@ -79,8 +86,8 @@ namespace EasyNetQ.Tests.ProducerTests
 
             if (exceptionMessage != null)
             {
-                // strings are implicitly convertered in byte[] from RabbitMQ client
-                // but not convertered back in string
+                // strings are implicitly converted in byte[] from RabbitMQ client
+                // but not converted back in string
                 // check the source code in the class RabbitMQ.Client.Impl.WireFormatting
                 properties.Headers.Add("ExceptionMessage", Encoding.UTF8.GetBytes(exceptionMessage));
             }
@@ -95,7 +102,7 @@ namespace EasyNetQ.Tests.ProducerTests
                 "the_routing_key",
                 properties,
                 body
-                );
+            );
         }
     }
 }

@@ -1,89 +1,90 @@
 ﻿// ReSharper disable InconsistentNaming
 
 using System;
-using System.Threading;
 using System.Threading.Tasks;
 using EasyNetQ.Consumer;
-using EasyNetQ.Events;
-using NUnit.Framework;
+using FluentAssertions;
+using NSubstitute;
 using RabbitMQ.Client;
-using Rhino.Mocks;
+using Xunit;
 
 namespace EasyNetQ.Tests.HandlerRunnerTests
 {
-    [TestFixture]
     public class When_a_user_handler_is_executed
     {
-        private IHandlerRunner handlerRunner;
-
-        byte[] deliveredBody = null;
-        MessageProperties deliveredProperties = null;
-        MessageReceivedInfo deliveredInfo = null;
-
-        readonly MessageProperties messageProperties = new MessageProperties
-            {
-                CorrelationId = "correlation_id"
-            };
-        readonly MessageReceivedInfo messageInfo = new MessageReceivedInfo("consumer_tag", 123, false, "exchange", "routingKey", "queue");
-        readonly byte[] messageBody = new byte[0];
-
-        private IModel channel;
-
-        [SetUp]
-        public void SetUp()
+        public When_a_user_handler_is_executed()
         {
-            //var logger = new ConsoleLogger();
-            var logger = MockRepository.GenerateStub<IEasyNetQLogger>();
-            var consumerErrorStrategy = MockRepository.GenerateStub<IConsumerErrorStrategy>();
-            var eventBus = new EventBus();
+            var consumerErrorStrategy = Substitute.For<IConsumerErrorStrategy>();
 
-            handlerRunner = new HandlerRunner(logger, consumerErrorStrategy, eventBus);
+            var handlerRunner = new HandlerRunner(consumerErrorStrategy);
 
-            Func<byte[], MessageProperties, MessageReceivedInfo, Task> userHandler = (body, properties, info) => 
-                Task.Factory.StartNew(() =>
-                    {
-                        deliveredBody = body;
-                        deliveredProperties = properties;
-                        deliveredInfo = info;
-                    });
-
-            var consumer = MockRepository.GenerateStub<IBasicConsumer>();
-            channel = MockRepository.GenerateStub<IModel>();
-            consumer.Stub(x => x.Model).Return(channel).Repeat.Any();
+            var consumer = Substitute.For<IBasicConsumer>();
+            channel = Substitute.For<IModel, IRecoverable>();
+            consumer.Model.Returns(channel);
 
             var context = new ConsumerExecutionContext(
-                userHandler, messageInfo, messageProperties, messageBody, consumer);
+                async (body, properties, info, cancellation) =>
+                {
+                    deliveredBody = body;
+                    deliveredProperties = properties;
+                    deliveredInfo = info;
+                    return AckStrategies.Ack;
+                },
+                messageInfo,
+                messageProperties,
+                messageBody
+            );
 
-            var autoResetEvent = new AutoResetEvent(false);
-            eventBus.Subscribe<AckEvent>(x => autoResetEvent.Set());
+            var handlerTask = handlerRunner.InvokeUserMessageHandlerAsync(context, default)
+                .ContinueWith(async x =>
+                {
+                    var ackStrategy = await x;
+                    return ackStrategy(channel, 42);
+                }, TaskContinuationOptions.ExecuteSynchronously)
+                .Unwrap();
 
-            handlerRunner.InvokeUserMessageHandler(context);
-
-            autoResetEvent.WaitOne(1000);
+            if (!handlerTask.Wait(5000))
+            {
+                throw new TimeoutException();
+            }
         }
 
-        [Test]
+        private byte[] deliveredBody;
+        private MessageProperties deliveredProperties;
+        private MessageReceivedInfo deliveredInfo;
+
+        private readonly MessageProperties messageProperties = new MessageProperties
+        {
+            CorrelationId = "correlation_id"
+        };
+
+        private readonly MessageReceivedInfo messageInfo = new MessageReceivedInfo("consumer_tag", 42, false, "exchange", "routingKey", "queue");
+        private readonly byte[] messageBody = new byte[0];
+
+        private readonly IModel channel;
+
+        [Fact]
+        public void Should_ACK()
+        {
+            channel.Received().BasicAck(42, false);
+        }
+
+        [Fact]
         public void Should_deliver_body()
         {
-            deliveredBody.ShouldBeTheSameAs(messageBody);
+            deliveredBody.Should().BeSameAs(messageBody);
         }
 
-        [Test]
-        public void Should_deliver_properties()
-        {
-            deliveredProperties.ShouldBeTheSameAs(messageProperties);
-        }
-
-        [Test]
+        [Fact]
         public void Should_deliver_info()
         {
-            deliveredInfo.ShouldBeTheSameAs(messageInfo);
+            deliveredInfo.Should().BeSameAs(messageInfo);
         }
 
-        [Test]
-        public void Should_ACK_message()
+        [Fact]
+        public void Should_deliver_properties()
         {
-            channel.AssertWasCalled(x => x.BasicAck(123, false));
+            deliveredProperties.Should().BeSameAs(messageProperties);
         }
     }
 }

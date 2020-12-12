@@ -1,25 +1,25 @@
 // ReSharper disable InconsistentNaming
 
 using System;
+using System.Threading;
 using EasyNetQ.AutoSubscribe;
-using NUnit.Framework;
+using Xunit;
 
 namespace EasyNetQ.Tests
 {
-    [TestFixture]
     public class DefaultMessageConsumerTests
     {
-        [Test]
+        [Fact]
         public void Should_create_consumer_instance_and_consume_message()
         {
             var consumer = new DefaultAutoSubscriberMessageDispatcher();
             var message = new MyMessage();
-            var consumedMessage = (MyMessage) null;
-            
+            var consumedMessage = (MyMessage)null;
+
             MyMessageConsumer.ConsumedMessageFunc = m => consumedMessage = m;
             consumer.Dispatch<MyMessage, MyMessageConsumer>(message);
 
-            Assert.AreSame(message, consumedMessage);
+            Assert.Same(message, consumedMessage);
         }
 
         // Discovered by reflection over test assembly, do not remove.
@@ -27,7 +27,7 @@ namespace EasyNetQ.Tests
         {
             public static Action<MyMessage> ConsumedMessageFunc { get; set; }
 
-            public void Consume(MyMessage message)
+            public void Consume(MyMessage message, CancellationToken cancellationToken)
             {
                 ConsumedMessageFunc(message);
             }

@@ -1,25 +1,23 @@
 ﻿// ReSharper disable InconsistentNaming
 
 using EasyNetQ.Consumer;
-using EasyNetQ.Loggers;
-using NUnit.Framework;
+using FluentAssertions;
+using Xunit;
 
 namespace EasyNetQ.Tests.ConsumeTests
 {
-    [TestFixture]
     public class HandlerCollectionTests
     {
-        private IHandlerCollection handlerCollection;
+        private readonly IHandlerCollection handlerCollection;
 
         private bool myMessageHandlerExecuted = false;
         private bool animalHandlerExecuted = false;
 
-        [SetUp]
-        public void SetUp()
+        public HandlerCollectionTests()
         {
-            handlerCollection = new HandlerCollection(new NullLogger());
+            handlerCollection = new HandlerCollection();
 
-            handlerCollection.Add<MyMessage>((message, info) => 
+            handlerCollection.Add<MyMessage>((message, info) =>
                 {
                     myMessageHandlerExecuted = true;
                 });
@@ -29,65 +27,69 @@ namespace EasyNetQ.Tests.ConsumeTests
                 });
         }
 
-        [Test]
+        [Fact]
         public void Should_return_matching_handler()
         {
             var handler = handlerCollection.GetHandler<MyMessage>();
 
-            handler(new Message<MyMessage>(new MyMessage()), null);
-            myMessageHandlerExecuted.ShouldBeTrue();
+            handler(new Message<MyMessage>(new MyMessage()), null, default);
+            myMessageHandlerExecuted.Should().BeTrue();
         }
 
-        [Test]
+        [Fact]
         public void Should_return_supertype_handler()
         {
             var handler = handlerCollection.GetHandler<Dog>();
 
-            handler(new Message<Dog>(new Dog()), null);
-            animalHandlerExecuted.ShouldBeTrue();
+            handler(new Message<Dog>(new Dog()), null, default);
+            animalHandlerExecuted.Should().BeTrue();
         }
 
-        [Test]
-        [ExpectedException(typeof(EasyNetQException))]
+        [Fact]
         public void Should_throw_if_handler_is_not_found()
         {
-            handlerCollection.GetHandler<MyOtherMessage>();
+            Assert.Throws<EasyNetQException>(() =>
+            {
+                handlerCollection.GetHandler<MyOtherMessage>();
+            });
         }
 
-        [Test]
+        [Fact]
         public void Should_return_matching_handler_by_type()
         {
             var handler = handlerCollection.GetHandler(typeof(MyMessage));
 
-            handler(new Message<MyMessage>(new MyMessage()), null);
-            myMessageHandlerExecuted.ShouldBeTrue();
+            handler(new Message<MyMessage>(new MyMessage()), null, default);
+            myMessageHandlerExecuted.Should().BeTrue();
         }
 
-        [Test]
+        [Fact]
         public void Should_return_supertype_handler_by_type()
         {
             var handler = handlerCollection.GetHandler(typeof(Dog));
 
-            handler(new Message<Dog>(new Dog()), null);
-            animalHandlerExecuted.ShouldBeTrue();
+            handler(new Message<Dog>(new Dog()), null, default);
+            animalHandlerExecuted.Should().BeTrue();
         }
 
-        [Test]
+        [Fact]
         public void Should_return_a_null_logger_if_ThrowOnNoMatchingHandler_is_false()
         {
             handlerCollection.ThrowOnNoMatchingHandler = false;
             var handler = handlerCollection.GetHandler<MyOtherMessage>();
 
-            handler(new Message<MyOtherMessage>(new MyOtherMessage()), null);
-            myMessageHandlerExecuted.ShouldBeFalse();
-            animalHandlerExecuted.ShouldBeFalse();
+            handler(new Message<MyOtherMessage>(new MyOtherMessage()), null, default);
+            myMessageHandlerExecuted.Should().BeFalse();
+            animalHandlerExecuted.Should().BeFalse();
         }
 
-        [Test]
-        [ExpectedException(typeof(EasyNetQException))]
+        [Fact]
         public void Should_not_be_able_to_register_multiple_handlers_for_the_same_type()
         {
-            handlerCollection.Add<MyMessage>((message, info) => { });
+            Assert.Throws<EasyNetQException>(() =>
+            {
+                handlerCollection.Add<MyMessage>((message, info) => { });
+            });
         }
     }
 }

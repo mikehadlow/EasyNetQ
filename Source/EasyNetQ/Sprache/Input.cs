@@ -1,15 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
 
-namespace Sprache
+namespace EasyNetQ.Sprache
 {
-    public class Input
+    internal class Input
     {
-        public string Source { get; set; }
-        readonly string _source;
-        readonly int _position;
-        private readonly int _line;
-        private readonly int _column;
+        private readonly string _source;
 
         internal IDictionary<object, object> Memos = new Dictionary<object, object>();
 
@@ -23,43 +19,44 @@ namespace Sprache
             Source = source;
 
             _source = source;
-            _position = position;
-            this._line = line;
-            this._column = column;
+            Position = position;
+            Line = line;
+            Column = column;
         }
+
+        public string Source { get; set; }
+
+        public char Current => _source[Position];
+
+        public bool AtEnd => Position == _source.Length;
+
+        public int Position { get; private set; }
+
+        public int Line { get; private set; }
+
+        public int Column { get; private set; }
 
         public Input Advance()
         {
             if (AtEnd)
                 throw new InvalidOperationException("The input is already at the end of the source.");
 
-            return new Input(_source, _position + 1, Current == '\n' ? _line + 1 : _line, Current == '\n' ? 1 : _column + 1);
+            return new Input(_source, Position + 1, Current == '\n' ? Line + 1 : Line, Current == '\n' ? 1 : Column + 1);
         }
-
-        public char Current { get { return _source[_position]; } }
-
-        public bool AtEnd { get { return _position == _source.Length; } }
-
-        public int Position { get { return _position; } }
-
-        public int Line { get { return _line; } }
-
-        public int Column { get { return _column; } }
 
         public override string ToString()
         {
-            return string.Format("Line {0}, Column {1}", _line, _column);
+            return string.Format("Line {0}, Column {1}", Line, Column);
         }
 
         public override bool Equals(object obj)
         {
-            var i = obj as Input;
-            return i != null && i._source == _source && i._position == _position;
+            return obj is Input i && i._source == _source && i.Position == Position;
         }
 
         public override int GetHashCode()
         {
-            return _source.GetHashCode() ^ _position.GetHashCode();
+            return _source.GetHashCode() ^ Position.GetHashCode();
         }
     }
 }

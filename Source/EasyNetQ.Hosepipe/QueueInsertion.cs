@@ -1,8 +1,7 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 
 using EasyNetQ.Consumer;
-
-using RabbitMQ.Client.Framing;
 
 namespace EasyNetQ.Hosepipe
 {
@@ -17,19 +16,25 @@ namespace EasyNetQ.Hosepipe
 
         public void PublishMessagesToQueue(IEnumerable<HosepipeMessage> messages, QueueParameters parameters)
         {
-            using (var connection = HosepipeConnection.FromParamters(parameters))
-            using (var channel = connection.CreateModel())
+            using var connection = HosepipeConnection.FromParameters(parameters);
+            using var channel = connection.CreateModel();
+
+            channel.ConfirmSelect();
+
+            foreach (var message in messages)
             {
-                foreach (var message in messages)
-                {
-                    var body = errorMessageSerializer.Deserialize(message.Body);
+                var body = errorMessageSerializer.Deserialize(message.Body);
 
-                    var properties = new BasicProperties();
-                    message.Properties.CopyTo(properties);
+                var properties = channel.CreateBasicProperties();
+                message.Properties.CopyTo(properties);
 
-                    channel.BasicPublish(message.Info.Exchange, message.Info.RoutingKey, properties, body);
-                }
-            }                        
+                var queueName = string.IsNullOrEmpty(parameters.QueueName)
+                    ? message.Info.Queue
+                    : parameters.QueueName;
+                channel.BasicPublish("", queueName, true, properties, body);
+
+                channel.WaitForConfirmsOrDie(parameters.ConfirmsTimeout);
+            }
         }
     }
 }

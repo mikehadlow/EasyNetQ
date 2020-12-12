@@ -1,15 +1,15 @@
-﻿using System;
+﻿using EasyNetQ.Tests;
+using System;
 using System.IO;
 using System.Threading;
-using NUnit.Framework;
 
 namespace EasyNetQ.Hosepipe.Tests
 {
-    [TestFixture, Explicit(@"Requires a RabbitMQ broker on localhost and access to C:\Temp\MessageOutput")]
+    [Explicit(@"Requires a RabbitMQ broker on localhost and access to C:\Temp\MessageOutput")]
     public class ProgramIntegrationTests
     {
-        const string outputPath = @"C:\Temp\MessageOutput";
-        const string queue = "EasyNetQ_Hosepipe_Tests_ProgramIntegrationTests+TestMessage:EasyNetQ_Hosepipe_Tests_hosepipe";
+        private const string outputPath = @"C:\Temp\MessageOutput";
+        private const string queue = "EasyNetQ_Hosepipe_Tests_ProgramIntegrationTests+TestMessage:EasyNetQ_Hosepipe_Tests_hosepipe";
 
         public void DumpMessages()
         {
@@ -64,7 +64,7 @@ namespace EasyNetQ.Hosepipe.Tests
 
             for (int i = 0; i < 10; i++)
             {
-                bus.Publish(new TestMessage { Text = string.Format("\n>>>>>> Message {0}\n", i) });
+                bus.PubSub.Publish(new TestMessage { Text = string.Format("\n>>>>>> Message {0}\n", i) });
             }
 
             bus.Dispose();
@@ -74,7 +74,7 @@ namespace EasyNetQ.Hosepipe.Tests
         {
             var bus = RabbitHutch.CreateBus("host=localhost");
 
-            bus.Subscribe<TestMessage>("hosepipe", message => Console.WriteLine(message.Text));
+            bus.PubSub.Subscribe<TestMessage>("hosepipe", message => Console.WriteLine(message.Text));
 
             Thread.Sleep(1000);
 
@@ -85,6 +85,5 @@ namespace EasyNetQ.Hosepipe.Tests
         {
             public string Text { get; set; }
         }
-
     }
 }

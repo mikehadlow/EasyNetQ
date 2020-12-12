@@ -1,90 +1,94 @@
 ﻿// ReSharper disable InconsistentNaming
 
 using System;
+using System.Threading.Tasks;
+using EasyNetQ.Internals;
 using EasyNetQ.MessageVersioning;
 using EasyNetQ.Producer;
 using EasyNetQ.Topology;
-using NUnit.Framework;
-using Rhino.Mocks;
+using FluentAssertions;
+using NSubstitute;
+using Xunit;
 
 namespace EasyNetQ.Tests.ProducerTests
 {
-    [TestFixture]
-    public class PublishExchangeDeclareStrategyTests
+    public class ExchangeDeclareStrategyTests
     {
         private const string exchangeName = "the_exchange";
 
-        [Test]
-        public void Should_declare_exchange_the_first_time_declare_is_called()
-        {
-            var exchangeDeclareCount = 0;
-
-            var publishExchangeDeclareStrategy = new PublishExchangeDeclareStrategy();
-            var advancedBus = MockRepository.GenerateStub<IAdvancedBus>();
-            IExchange exchange = new Exchange(exchangeName);
-            advancedBus
-                .Stub(x => x.ExchangeDeclare(exchangeName, "topic"))
-                .Return(exchange)
-                .WhenCalled(x => exchangeDeclareCount++);
-
-            var declaredExchange = publishExchangeDeclareStrategy.DeclareExchange(advancedBus, exchangeName, ExchangeType.Topic);
-
-            advancedBus.AssertWasCalled(x => x.ExchangeDeclare(exchangeName, "topic"));
-            declaredExchange.ShouldBeTheSameAs(exchange);
-            exchangeDeclareCount.ShouldEqual(1);
-        }
-
-        [Test]
-        public void Should_not_declare_exchange_the_second_time_declare_is_called()
-        {
-            var exchangeDeclareCount = 0;
-
-            var publishExchangeDeclareStrategy = new Producer.PublishExchangeDeclareStrategy();
-            var advancedBus = MockRepository.GenerateStub<IAdvancedBus>();
-            IExchange exchange = new Exchange(exchangeName);
-            advancedBus
-                .Stub(x => x.ExchangeDeclare(exchangeName, "topic"))
-                .Return(exchange)
-                .WhenCalled(x => exchangeDeclareCount++);
-            var _ = publishExchangeDeclareStrategy.DeclareExchange(advancedBus, exchangeName, ExchangeType.Topic);
-            var declaredExchange = publishExchangeDeclareStrategy.DeclareExchange(advancedBus, exchangeName, ExchangeType.Topic);
-
-            advancedBus.AssertWasCalled(x => x.ExchangeDeclare(exchangeName, "topic"));
-            declaredExchange.ShouldBeTheSameAs(exchange);
-            exchangeDeclareCount.ShouldEqual(1);
-        }
-
-        [Test]
+        [Fact]
         public void Should_declare_exchange_again_if_first_attempt_failed()
         {
             var exchangeDeclareCount = 0;
-           
-            var advancedBus = MockRepository.GenerateStrictMock<IAdvancedBus>();
+
+            var advancedBus = Substitute.For<IAdvancedBus>();
             IExchange exchange = new Exchange(exchangeName);
 
-            advancedBus
-                .Expect(x => x.ExchangeDeclare(exchangeName, "topic"))
-                .Throw(new Exception())
-                .WhenCalled(x => exchangeDeclareCount++);
+            advancedBus.ExchangeDeclareAsync(exchangeName, Arg.Any<Action<IExchangeDeclareConfiguration>>()).Returns(
+                x => Task.FromException(new Exception()),
+                x =>
+                {
+                    exchangeDeclareCount++;
+                    return Task.FromResult(exchange);
+                });
 
-            advancedBus
-                .Expect(x => x.ExchangeDeclare(exchangeName, "topic"))
-                .Return(exchange)
-                .WhenCalled(x => exchangeDeclareCount++);
-
-            var publishExchangeDeclareStrategy = new VersionedPublishExchangeDeclareStrategy();
+            var exchangeDeclareStrategy = new VersionedExchangeDeclareStrategy(Substitute.For<IConventions>(), advancedBus);
             try
             {
-                publishExchangeDeclareStrategy.DeclareExchange(advancedBus, exchangeName, ExchangeType.Topic);
+                exchangeDeclareStrategy.DeclareExchange(exchangeName, ExchangeType.Topic);
             }
             catch (Exception)
             {
             }
-            var declaredExchange = publishExchangeDeclareStrategy.DeclareExchange(advancedBus, exchangeName, ExchangeType.Topic);
-            advancedBus.AssertWasCalled(x => x.ExchangeDeclare(exchangeName, "topic"));
-            advancedBus.AssertWasCalled(x => x.ExchangeDeclare(exchangeName, "topic"));
-            declaredExchange.ShouldBeTheSameAs(exchange);
-            exchangeDeclareCount.ShouldEqual(1);
+
+            var declaredExchange = exchangeDeclareStrategy.DeclareExchange(exchangeName, ExchangeType.Topic);
+            advancedBus.Received(2).ExchangeDeclareAsync(exchangeName, Arg.Any<Action<IExchangeDeclareConfiguration>>());
+            declaredExchange.Should().BeSameAs(exchange);
+            exchangeDeclareCount.Should().Be(1);
+        }
+
+        [Fact]
+        public void Should_declare_exchange_the_first_time_declare_is_called()
+        {
+            var exchangeDeclareCount = 0;
+            var advancedBus = Substitute.For<IAdvancedBus>();
+            IExchange exchange = new Exchange(exchangeName);
+            advancedBus.ExchangeDeclareAsync(exchangeName, Arg.Any<Action<IExchangeDeclareConfiguration>>())
+                .Returns(x =>
+                {
+                    exchangeDeclareCount++;
+                    return Task.FromResult(exchange);
+                });
+
+            var publishExchangeDeclareStrategy = new DefaultExchangeDeclareStrategy(Substitute.For<IConventions>(), advancedBus);
+
+            var declaredExchange = publishExchangeDeclareStrategy.DeclareExchange(exchangeName, ExchangeType.Topic);
+
+            advancedBus.Received().ExchangeDeclareAsync(exchangeName, Arg.Any<Action<IExchangeDeclareConfiguration>>());
+            declaredExchange.Should().BeSameAs(exchange);
+            exchangeDeclareCount.Should().Be(1);
+        }
+
+        [Fact]
+        public void Should_not_declare_exchange_the_second_time_declare_is_called()
+        {
+            var exchangeDeclareCount = 0;
+            var advancedBus = Substitute.For<IAdvancedBus>();
+            IExchange exchange = new Exchange(exchangeName);
+            advancedBus.ExchangeDeclareAsync(exchangeName, Arg.Any<Action<IExchangeDeclareConfiguration>>()).Returns(x =>
+            {
+                exchangeDeclareCount++;
+                return Task.FromResult(exchange);
+            });
+
+            var exchangeDeclareStrategy = new DefaultExchangeDeclareStrategy(Substitute.For<IConventions>(), advancedBus);
+
+            var _ = exchangeDeclareStrategy.DeclareExchange(exchangeName, ExchangeType.Topic);
+            var declaredExchange = exchangeDeclareStrategy.DeclareExchange(exchangeName, ExchangeType.Topic);
+
+            advancedBus.Received().ExchangeDeclareAsync(exchangeName, Arg.Any<Action<IExchangeDeclareConfiguration>>());
+            declaredExchange.Should().BeSameAs(exchange);
+            exchangeDeclareCount.Should().Be(1);
         }
     }
 }

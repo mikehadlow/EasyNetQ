@@ -1,29 +1,43 @@
 ﻿using System;
+using System.Runtime.Serialization;
 
 namespace EasyNetQ
 {
+    [Serializable]
     public class EasyNetQException : Exception
     {
-        public EasyNetQException() {}
-        public EasyNetQException(string message) : base(message) {}
-        public EasyNetQException(string format, params string[] args) : base(string.Format(format, args)) {}
-        public EasyNetQException(string message, Exception inner) : base(message, inner) {}
+        /// <inheritdoc />
+        public EasyNetQException() { }
 
+        /// <inheritdoc />
+        public EasyNetQException(string message) : base(message) { }
+
+        /// <inheritdoc />
+        public EasyNetQException(string format, params object[] args) : base(string.Format(format, args)) { }
+
+        /// <inheritdoc />
+        public EasyNetQException(string message, Exception inner) : base(message, inner) { }
+
+        /// <inheritdoc />
+        protected EasyNetQException(SerializationInfo info, StreamingContext context) : base(info, context) { }
     }
 
-    public class EasyNetQInvalidMessageTypeException : EasyNetQException
-    {
-        public EasyNetQInvalidMessageTypeException() {}
-        public EasyNetQInvalidMessageTypeException(string message) : base(message) {}
-        public EasyNetQInvalidMessageTypeException(string format, params string[] args) : base(format, args) {}
-        public EasyNetQInvalidMessageTypeException(string message, Exception inner) : base(message, inner) {}
-    }
-
+    [Serializable]
     public class EasyNetQResponderException : EasyNetQException
     {
+        /// <inheritdoc />
         public EasyNetQResponderException() { }
+
+        /// <inheritdoc />
         public EasyNetQResponderException(string message) : base(message) { }
-        public EasyNetQResponderException(string format, params string[] args) : base(format, args) { }
+
+        /// <inheritdoc />
+        public EasyNetQResponderException(string format, params object[] args) : base(format, args) { }
+
+        /// <inheritdoc />
         public EasyNetQResponderException(string message, Exception inner) : base(message, inner) { }
+
+        /// <inheritdoc />
+        protected EasyNetQResponderException(SerializationInfo info, StreamingContext context) : base(info, context) { }
     }
 }

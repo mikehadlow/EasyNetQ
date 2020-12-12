@@ -1,44 +1,38 @@
-﻿// ReSharper disable InconsistentNaming
-
+// ReSharper disable InconsistentNaming
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using EasyNetQ.Events;
 using EasyNetQ.Tests.Mocking;
-using NUnit.Framework;
+using FluentAssertions;
+using NSubstitute;
 using RabbitMQ.Client;
-using Rhino.Mocks;
+using Xunit;
 
 namespace EasyNetQ.Tests
 {
-    [TestFixture]
-    public class When_publish_is_called
+    public class When_publish_is_called : IDisposable
     {
         private const string correlationId = "abc123";
-        
-        private MockBuilder mockBuilder;
-        byte[] body;
-        private IBasicProperties properties;
 
-        [SetUp]
-        public void SetUp()
+        private readonly MockBuilder mockBuilder;
+
+        public When_publish_is_called()
         {
-            mockBuilder = new MockBuilder(x => 
-                x.Register<ICorrelationIdGenerationStrategy>(_ => new StaticCorrelationIdGenerationStrategy(correlationId)));
-
-            mockBuilder.NextModel.Stub(x =>
-                x.BasicPublish(null, null, false, null, null))
-                    .IgnoreArguments()
-                    .Callback<string, string, bool, IBasicProperties, byte[]>((e, r, m, p, b) =>
-                    {
-                        body = b;
-                        properties = p;
-                        return true;
-                    });
+            mockBuilder = new MockBuilder(x =>
+                x.Register<ICorrelationIdGenerationStrategy>(new StaticCorrelationIdGenerationStrategy(correlationId))
+            );
 
             var message = new MyMessage { Text = "Hiya!" };
-            mockBuilder.Bus.Publish(message);
+            mockBuilder.PubSub.Publish(message);
             WaitForMessageToPublish();
+        }
+
+        public void Dispose()
+        {
+            mockBuilder.Bus.Dispose();
         }
 
         private void WaitForMessageToPublish()
@@ -48,77 +42,60 @@ namespace EasyNetQ.Tests
             autoResetEvent.WaitOne(1000);
         }
 
-        [Test]
+        [Fact]
         public void Should_create_a_channel_to_publish_on()
         {
             // a channel is also created then disposed to declare the exchange.
-            mockBuilder.Channels.Count.ShouldEqual(1);
+            mockBuilder.Channels.Count.Should().Be(2);
         }
 
-        [Test]
+        [Fact]
         public void Should_call_basic_publish()
         {
-            mockBuilder.Channels[0].AssertWasCalled(x => 
-                x.BasicPublish(
-                    Arg<string>.Is.Equal("EasyNetQ.Tests.MyMessage:EasyNetQ.Tests"), 
-                    Arg<string>.Is.Equal(""), 
-                    Arg<bool>.Is.Equal(false),
-                    Arg<IBasicProperties>.Is.Equal(mockBuilder.BasicProperties), 
-                    Arg<byte[]>.Is.Anything));
-
-            var json = Encoding.UTF8.GetString(body);
-            json.ShouldEqual("{\"Text\":\"Hiya!\"}");
+            mockBuilder.Channels[1].Received().BasicPublish(
+                Arg.Is("EasyNetQ.Tests.MyMessage, EasyNetQ.Tests"),
+                Arg.Is(""),
+                Arg.Is(false),
+                Arg.Is<IBasicProperties>(
+                    x => x.CorrelationId == correlationId
+                         && x.Type == "EasyNetQ.Tests.MyMessage, EasyNetQ.Tests"
+                         && x.DeliveryMode == 2
+                ),
+                Arg.Is<ReadOnlyMemory<byte>>(
+                    x => x.ToArray().SequenceEqual(Encoding.UTF8.GetBytes("{\"Text\":\"Hiya!\"}"))
+                )
+            );
         }
 
-        [Test]
-        public void Should_put_correlationId_in_properties()
-        {
-            properties.CorrelationId.ShouldEqual(correlationId);
-        }
-
-        [Test]
-        public void Should_put_message_type_in_message_type_field()
-        {
-            properties.Type.ShouldEqual("EasyNetQ.Tests.MyMessage:EasyNetQ.Tests");
-        }
-
-        [Test]
-        public void Should_publish_persistent_messsages()
-        {
-            properties.DeliveryMode.ShouldEqual(2);
-        }
-
-        [Test]
+        [Fact]
         public void Should_declare_exchange()
         {
-            mockBuilder.Channels[0].AssertWasCalled(x => x.ExchangeDeclare(
-                "EasyNetQ.Tests.MyMessage:EasyNetQ.Tests", "topic", true, false, new Dictionary<string, object>()));
-        }
-
-        [Test]
-        public void Should_write_debug_message_saying_message_was_published()
-        {
-            mockBuilder.Logger.AssertWasCalled(x => x.DebugWrite(
-                "Published to exchange: '{0}', routing key: '{1}', correlationId: '{2}'",
-                "EasyNetQ.Tests.MyMessage:EasyNetQ.Tests",
-                "",
-                correlationId));
+            mockBuilder.Channels[0].Received().ExchangeDeclare(
+                Arg.Is("EasyNetQ.Tests.MyMessage, EasyNetQ.Tests"),
+                Arg.Is("topic"),
+                Arg.Is(true),
+                Arg.Is(false),
+                Arg.Is((IDictionary<string, object>)null)
+            );
         }
     }
 
-    [TestFixture]
-    public class When_publish_with_topic_is_called
+    public class When_publish_with_topic_is_called : IDisposable
     {
-        private MockBuilder mockBuilder;
+        private readonly MockBuilder mockBuilder;
 
-        [SetUp]
-        public void SetUp()
+        public When_publish_with_topic_is_called()
         {
             mockBuilder = new MockBuilder();
 
             var message = new MyMessage { Text = "Hiya!" };
-            mockBuilder.Bus.Publish(message, "X.A");
+            mockBuilder.PubSub.Publish(message, c => c.WithTopic("X.A"));
             WaitForMessageToPublish();
+        }
+
+        public void Dispose()
+        {
+            mockBuilder.Bus.Dispose();
         }
 
         private void WaitForMessageToPublish()
@@ -128,16 +105,16 @@ namespace EasyNetQ.Tests
             autoResetEvent.WaitOne(1000);
         }
 
-        [Test]
+        [Fact]
         public void Should_call_basic_publish_with_correct_routing_key()
         {
-            mockBuilder.Channels[0].AssertWasCalled(x =>
-                x.BasicPublish(
-                    Arg<string>.Is.Equal("EasyNetQ.Tests.MyMessage:EasyNetQ.Tests"),
-                    Arg<string>.Is.Equal("X.A"),
-                    Arg<bool>.Is.Equal(false),
-                    Arg<IBasicProperties>.Is.Equal(mockBuilder.BasicProperties),
-                    Arg<byte[]>.Is.Anything));
+            mockBuilder.Channels[1].Received().BasicPublish(
+                    Arg.Is("EasyNetQ.Tests.MyMessage, EasyNetQ.Tests"),
+                    Arg.Is("X.A"),
+                    Arg.Is(false),
+                    Arg.Any<IBasicProperties>(),
+                    Arg.Any<ReadOnlyMemory<byte>>()
+            );
         }
     }
 }

@@ -1,85 +1,86 @@
 ﻿// ReSharper disable InconsistentNaming
-using System;
 using EasyNetQ.AutoSubscribe;
-using EasyNetQ.FluentConfiguration;
-using NUnit.Framework;
-using Rhino.Mocks;
+using EasyNetQ.Internals;
+using FluentAssertions;
+using NSubstitute;
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Xunit;
 
 namespace EasyNetQ.Tests.AutoSubscriberTests
 {
-    [TestFixture]
-    public class When_autosubscribing_with_subscription_configuration_action
+    public class When_autosubscribing_with_subscription_configuration_action : IDisposable
     {
         private IBus bus;
         private Action<ISubscriptionConfiguration> capturedAction;
-       
-        [SetUp]
-        public void SetUp()
+        private IPubSub pubSub;
+
+        public When_autosubscribing_with_subscription_configuration_action()
         {
-            bus = MockRepository.GenerateMock<IBus>();
-           
+            pubSub = Substitute.For<IPubSub>();
+            bus = Substitute.For<IBus>();
+            bus.PubSub.Returns(pubSub);
 
             var autoSubscriber = new AutoSubscriber(bus, "my_app")
                 {
                         ConfigureSubscriptionConfiguration =
                                 c => c.WithAutoDelete()
-                                    .WithCancelOnHaFailover()
                                     .WithExpires(10)
                                     .WithPrefetchCount(10)
                                     .WithPriority(10)
                 };
 
-            bus.Stub(x => x.Subscribe(
-                    Arg<string>.Is.Equal("MyActionTest"),
-                    Arg<Action<MessageA>>.Is.Anything,
-                    Arg<Action<ISubscriptionConfiguration>>.Is.Anything
-                    ))
-                    .WhenCalled(a =>
-                        {
-                           capturedAction= (Action<ISubscriptionConfiguration>)a.Arguments[2];
-                        });
+            pubSub.SubscribeAsync(
+                    Arg.Is("MyActionTest"),
+                    Arg.Any<Func<MessageA, CancellationToken, Task>>(),
+                    Arg.Any<Action<ISubscriptionConfiguration>>()
+                )
+                .Returns(Task.FromResult(Substitute.For<ISubscriptionResult>()).ToAwaitableDisposable())
+                .AndDoes(a => capturedAction = (Action<ISubscriptionConfiguration>)a.Args()[2]);
 
-            autoSubscriber.Subscribe(GetType().Assembly);
+            autoSubscriber.Subscribe(new[] { typeof(MyConsumerWithAction) });
         }
 
-        [Test]
+        public void Dispose()
+        {
+            bus.Dispose();
+        }
+
+        [Fact]
         public void Should_have_called_subscribe()
         {
-            bus.AssertWasCalled(
-                    x => x.Subscribe(
-                        Arg<string>.Is.Anything, 
-                        Arg<Action<MessageA>>.Is.Anything, 
-                        Arg<Action<ISubscriptionConfiguration>>.Is.Anything));
-
+            pubSub.Received().SubscribeAsync(
+                Arg.Any<string>(),
+                Arg.Any<Func<MessageA, CancellationToken, Task>>(),
+                Arg.Any<Action<ISubscriptionConfiguration>>()
+            );
         }
 
-        [Test]
+        [Fact]
         public void Should_have_called_subscribe_with_action_capable_of_configuring_subscription()
         {
             var subscriptionConfiguration = new SubscriptionConfiguration(1);
-            
+
             capturedAction(subscriptionConfiguration);
 
-            subscriptionConfiguration.AutoDelete.ShouldBeTrue();
-            subscriptionConfiguration.CancelOnHaFailover.ShouldBeTrue();
-            subscriptionConfiguration.Expires.ShouldEqual(10);
-            subscriptionConfiguration.PrefetchCount.ShouldEqual(10);
-            subscriptionConfiguration.Priority.ShouldEqual(10);
-
+            subscriptionConfiguration.AutoDelete.Should().BeTrue();
+            subscriptionConfiguration.Expires.Should().Be(10);
+            subscriptionConfiguration.PrefetchCount.Should().Be(10);
+            subscriptionConfiguration.Priority.Should().Be(10);
         }
 
         // Discovered by reflection over test assembly, do not remove.
         private class MyConsumerWithAction : IConsume<MessageA>
         {
             [AutoSubscriberConsumer(SubscriptionId = "MyActionTest")]
-            public void Consume(MessageA message)
+            public void Consume(MessageA message, CancellationToken cancellationToken)
             {
             }
         }
 
         private class MessageA
         {
-            public string Text { get; set; }
         }
     }
 }

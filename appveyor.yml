@@ -1,5 +1,21 @@
+image:
+  - Previous Visual Studio 2019
+skip_branch_with_pr: true
+
 pull_requests:
   do_not_increment_build_number: true
+
+test: off
+
+install:
+  - ps: |
+      $dockerPathName = (Get-WmiObject win32_service | ?{$_.Name -eq 'docker'}).PathName
+      Write-Host $dockerPathName
+      $dockerConfigFile = $dockerPathName.split()[-1].trim('"')
+      Get-Content $dockerConfigFile
+      $integTestsConfigFile = '.\Source\EasyNetQ.IntegrationTests\settings.json'
+      $integTestsConfig = Get-Content $integTestsConfigFile
+      $integTestsConfig -replace ("""dockerHttpApiUri"": ""http://127.0.0.1:2375""", """dockerHttpApiUri"": ""npipe://./pipe/docker_engine_windows""") | Set-Content $integTestsConfigFile
 
 build:
   project: Build\EasyNetQ.proj
@@ -9,18 +25,29 @@ build:
 branches:
   only:
   - master
+  - develop
 
 artifacts:
   - path: Package\**\*.nupkg
+  - path: Package\**\*.snupkg
 
 deploy:
   - provider: NuGet
-    artifact: /.*\.nupkg/
+    artifact: /.*\.s?nupkg/
     server:
     api_key:
-      secure: ejD7WLs3aqlXgHLyWq444QK6pnMT6g/QiRxptqIGaOgKvGM7SJ17r/QH6e1jEJ9M
+      secure: j0hMTOcdalYZo+isJFFL/FoFtqb/imD9VPtOF6F3fp73tmdFSupTfz5ygTIVUoF5
+    skip_symbols: false
     on:
       branch: master
+  - provider: NuGet
+    artifact: /.*\.s?nupkg/
+    server:
+    api_key:
+      secure: j0hMTOcdalYZo+isJFFL/FoFtqb/imD9VPtOF6F3fp73tmdFSupTfz5ygTIVUoF5
+    skip_symbols: false
+    on:
+      branch: develop
 
 skip_commits:
   files:
@@ -31,5 +58,6 @@ skip_commits:
   - hall_of_fame.md
   - licence.txt
   - DatabaseScripts/*
+  - CODEOWNERS
 
 skip_tags: true

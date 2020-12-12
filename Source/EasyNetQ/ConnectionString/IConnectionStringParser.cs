@@ -1,28 +1,15 @@
-﻿using System.Linq;
-using Sprache;
-
-namespace EasyNetQ.ConnectionString
+﻿namespace EasyNetQ.ConnectionString
 {
+    /// <summary>
+    ///     Allows to create ConnectionConfiguration from string
+    /// </summary>
     public interface IConnectionStringParser
     {
+        /// <summary>
+        ///     Parses a connection string to a ConnectionConfiguration
+        /// </summary>
+        /// <param name="connectionString">The connection string</param>
+        /// <returns>Parsed ConnectionConfiguration</returns>
         ConnectionConfiguration Parse(string connectionString);
-    }
-
-    public class ConnectionStringParser : IConnectionStringParser
-    {
-        public ConnectionConfiguration Parse(string connectionString)
-        {
-            try
-            {
-                var updater = ConnectionStringGrammar.ConnectionStringBuilder.Parse(connectionString);
-                var connectionConfiguration = updater.Aggregate(new ConnectionConfiguration(), (current, updateFunction) => updateFunction(current));
-                connectionConfiguration.Validate();
-                return connectionConfiguration;
-            }
-            catch (ParseException parseException)
-            {
-                throw new EasyNetQException("Connection String {0}", parseException.Message);
-            }
-        }
     }
 }
